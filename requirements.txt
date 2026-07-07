@@ -1,3 +1,4 @@
+# NOTE: kept for pip compatibility; the source of truth is pyproject.toml (use `uv sync --dev`).
 # Core workshop dependencies
 PyYAML>=6.0.2
 pydantic>=2.8.0

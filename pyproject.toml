@@ -5,7 +5,21 @@ description = "Workshop MVP for developer onboarding with Strands Agents and Ama
 requires-python = ">=3.11"
 dependencies = [
   "PyYAML>=6.0.2",
-  "pydantic>=2.8.0"
+  "pydantic>=2.8.0",
+  # Bench domain daily cycle (local-only, no AWS required) — see docs/adr/0002
+  "langgraph>=0.2",
+]
+
+[project.optional-dependencies]
+# Lab 2 / real agents (requires AWS credentials + Bedrock model access)
+agents = [
+  "strands-agents",
+  "bedrock-agentcore",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
 ]
 
 [tool.pytest.ini_options]

@@ -17,6 +17,7 @@ import argparse
 import json
 
 from agent.tools.load_profile import load_profile
+from bench.config import require_bench_enabled
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
 from bench.tools.load_track import load_track
@@ -40,6 +41,7 @@ def _parse_done(values: list[str]) -> list[dict]:
 
 
 def main() -> None:
+    require_bench_enabled()
     parser = argparse.ArgumentParser(prog="bench.app", description="Bench Assistant (local MVP)")
     sub = parser.add_subparsers(dest="command", required=True)
 

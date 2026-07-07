@@ -67,12 +67,24 @@ Future AgentCore Runtime
 
 ## Local quickstart
 
+Using [uv](https://docs.astral.sh/uv/) (recommended — creates the venv and installs everything):
+
+```bash
+uv sync --dev
+uv run python -m agent.app --employee "Ada Lovelace" --email ada@example.com --profile backend-dev --project payments-platform
+```
+
+<details>
+<summary>Classic pip/venv alternative</summary>
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 python -m agent.app --employee "Ada Lovelace" --email ada@example.com --profile backend-dev --project payments-platform
 ```
+
+</details>
 
 Expected output: an onboarding plan in Markdown with repos, permissions, checklist and first steps.
 
@@ -142,14 +154,16 @@ A second, real-world domain built on the same architecture: an assistant for peo
 responsibles). Spec: [`docs/BENCH_SPEC.md`](docs/BENCH_SPEC.md) · ADRs: [`docs/adr/`](docs/adr) ·
 AWS accesses to request: [`docs/BENCH_AWS_ACCESS_CHECKLIST.md`](docs/BENCH_AWS_ACCESS_CHECKLIST.md).
 
+Bench is behind a feature flag: set `BENCH_ENABLED=1` (env or `.env`).
+
 ```bash
 # assign a person to bench and get the plan (deterministic, no AWS)
-python -m bench.app start --employee "Ada Lovelace" --email ada@example.com \
-  --profile backend-dev --track aws-backend-track
+BENCH_ENABLED=1 uv run python -m bench.app start --employee "Ada Lovelace" \
+  --email ada@example.com --profile backend-dev --track aws-backend-track
 
 # daily cycle as a LangGraph workflow (AM and PM check-ins, EOD report)
-python -m bench.graph --email ada@example.com --period am --planned "Course module 3"
-python -m bench.graph --email ada@example.com --period pm --done "1:course at 45%"
+BENCH_ENABLED=1 uv run python -m bench.graph --email ada@example.com --period am --planned "Course module 3"
+BENCH_ENABLED=1 uv run python -m bench.graph --email ada@example.com --period pm --done "1:course at 45%"
 ```
 
 Engine split (ADR 0002): **Strands** for conversation (`bench/strands_agent.py`, optional,

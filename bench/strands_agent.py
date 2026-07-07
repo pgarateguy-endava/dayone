@@ -63,6 +63,9 @@ def build_agent() -> "Agent":
 
 
 def main() -> None:
+    from bench.config import require_bench_enabled
+
+    require_bench_enabled()
     parser = argparse.ArgumentParser(prog="bench.strands_agent")
     parser.add_argument("--employee", required=True)
     parser.add_argument("--email", required=True)

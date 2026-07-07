@@ -29,6 +29,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("LangGraph is required for the daily cycle: pip install langgraph") from exc
 
+from bench.config import require_bench_enabled
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.load_track import load_track
 from bench.tools.state import load_bench_state, record_check_in
@@ -156,6 +157,7 @@ def _parse_done(values: list[str]) -> list[dict]:
 
 
 def main() -> None:
+    require_bench_enabled()
     parser = argparse.ArgumentParser(prog="bench.graph", description="Bench daily cycle (LangGraph)")
     parser.add_argument("--email", required=True)
     parser.add_argument("--period", required=True, choices=["am", "pm"])
