@@ -2,6 +2,9 @@
 PyYAML>=6.0.2
 pydantic>=2.8.0
 
+# Bench domain daily cycle (local-only, no AWS required) — see docs/adr/0002
+langgraph>=0.2
+
 # Uncomment when running with the real Strands SDK / AgentCore environment.
 # strands-agents
 # bedrock-agentcore

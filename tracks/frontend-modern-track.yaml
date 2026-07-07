@@ -1,0 +1,45 @@
+id: frontend-modern-track
+name: Modern Frontend Upskilling Track
+target_profiles:
+  - frontend-dev
+duration_weeks: 4
+responsibles:
+  - name: People Lead (example)
+    email: people.lead@example.com
+    role: people-lead
+deadlines:
+  - id: profile-updated
+    description: Endava profile updated and reviewed by People Lead.
+    due: 2026-07-21
+  - id: capstone-demo
+    description: Portfolio project demo to the capability lead.
+    due: 2026-08-04
+mandatory_courses:
+  - id: react-advanced
+    name: Advanced React Patterns
+    provider: Udemy Business
+    est_hours: 10
+  - id: web-perf
+    name: Web Performance Fundamentals
+    provider: Frontend Masters
+    est_hours: 6
+certification_options:
+  - id: aws-ccp
+    name: AWS Certified Cloud Practitioner
+    notes: Baseline cloud credential for frontend profiles.
+profile_tasks:
+  - Update the Endava profile summary with recent project experience.
+  - Add frontend framework and testing skills with evidence.
+  - Ask the People Lead for a profile review.
+profile_docs:
+  - docs/endava/profile-guidelines.md
+portfolio_projects:
+  - name: design-system-showcase
+    description: Small component library with Storybook, tests and CI.
+    skills: [react, storybook, testing]
+daily_goals:
+  - Study at least 2 hours of the current mandatory course and log the progress percentage.
+  - Record evidence for anything completed (course %, commit URL or profile diff).
+  - Advance one profile task or one portfolio-project step.
+check_in_times: ["09:30", "17:30"]
+practice_repos: []

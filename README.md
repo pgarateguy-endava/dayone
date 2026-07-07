@@ -135,6 +135,26 @@ Then check `accelerator/INTEGRATION_PLAN.md` to decide whether to:
 - Map profiles to permission sets.
 - Approve sensitive actions human-in-the-loop.
 
+## Bench domain (branch `feature/bench`)
+
+A second, real-world domain built on the same architecture: an assistant for people on
+**Endava's Bench** (courses, certifications, daily goals, profile updates, EOD reports to
+responsibles). Spec: [`docs/BENCH_SPEC.md`](docs/BENCH_SPEC.md) · ADRs: [`docs/adr/`](docs/adr) ·
+AWS accesses to request: [`docs/BENCH_AWS_ACCESS_CHECKLIST.md`](docs/BENCH_AWS_ACCESS_CHECKLIST.md).
+
+```bash
+# assign a person to bench and get the plan (deterministic, no AWS)
+python -m bench.app start --employee "Ada Lovelace" --email ada@example.com \
+  --profile backend-dev --track aws-backend-track
+
+# daily cycle as a LangGraph workflow (AM and PM check-ins, EOD report)
+python -m bench.graph --email ada@example.com --period am --planned "Course module 3"
+python -m bench.graph --email ada@example.com --period pm --done "1:course at 45%"
+```
+
+Engine split (ADR 0002): **Strands** for conversation (`bench/strands_agent.py`, optional,
+needs AWS) and **LangGraph** for the scheduled daily cycle (`bench/graph.py`, runs local).
+
 ## Design principle
 
 Onboarding must be declarative:

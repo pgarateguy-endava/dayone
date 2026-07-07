@@ -1,0 +1,62 @@
+id: aws-backend-track
+name: AWS Backend Upskilling Track
+target_profiles:
+  - backend-dev
+duration_weeks: 6
+responsibles:
+  - name: People Lead (example)
+    email: people.lead@example.com
+    role: people-lead
+  - name: Resourcing (example)
+    email: resourcing@example.com
+    role: resourcing
+deadlines:
+  - id: profile-updated
+    description: Endava profile updated and reviewed by People Lead.
+    due: 2026-07-21
+  - id: cert-exam-scheduled
+    description: Certification exam date booked.
+    due: 2026-08-04
+  - id: cert-exam
+    description: Certification exam taken.
+    due: 2026-08-18
+mandatory_courses:
+  - id: aws-fundamentals
+    name: AWS Cloud Practitioner Essentials
+    provider: AWS Skill Builder
+    est_hours: 12
+  - id: serverless-apis
+    name: Building Serverless APIs on AWS
+    provider: Udemy Business
+    est_hours: 10
+  - id: bedrock-agents
+    name: Generative AI agents with Amazon Bedrock
+    provider: AWS Skill Builder
+    est_hours: 8
+certification_options:
+  - id: aws-saa
+    name: AWS Certified Solutions Architect - Associate
+    notes: Preferred option for backend profiles; voucher via People Lead.
+  - id: aws-dva
+    name: AWS Certified Developer - Associate
+    notes: Alternative if the person is more code-focused.
+profile_tasks:
+  - Update the Endava profile summary with recent project experience.
+  - Add AWS and agentic-AI skills with evidence.
+  - Refresh certifications and courses section.
+  - Ask the People Lead for a profile review.
+profile_docs:
+  - docs/endava/profile-guidelines.md
+portfolio_projects:
+  - name: bench-onboarding-agent
+    description: Extend this repo's agent with a new tool or a new track, PR-based.
+    skills: [python, strands, agentcore]
+  - name: serverless-notes-api
+    description: Small serverless CRUD API with IaC and tests, deployed to a sandbox.
+    skills: [aws, api-gateway, lambda, dynamodb]
+daily_goals:
+  - Study at least 2 hours of the current mandatory course and log the progress percentage.
+  - Record evidence for anything completed (course %, commit URL or profile diff).
+  - Advance one profile task or one portfolio-project step.
+check_in_times: ["09:30", "17:30"]
+practice_repos: []
