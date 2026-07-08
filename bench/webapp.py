@@ -56,7 +56,20 @@ h1 { font-size: 22px; } h2 { font-size: 17px; }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 a { color: #1d4ed8; } small { color: #6b7280; }
 tr.editing td { background: #f8fafc; }
+dialog { border: 1px solid #ddd; border-radius: 12px; padding: 22px 26px; min-width: 480px; max-width: 640px; }
+dialog::backdrop { background: rgba(15, 23, 42, .45); }
+dialog h2 { margin-top: 0; }
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+button.add { border-radius: 999px; font-size: 15px; }
 """
+
+
+def _modal(modal_id: str, button_label: str, title: str, form_html: str) -> str:
+    """A '+' button that opens a native <dialog> modal containing the given form."""
+    return f"""<button class="add" onclick="document.getElementById('{modal_id}').showModal()">＋ {button_label}</button>
+<dialog id="{modal_id}"><h2>{title}</h2>{form_html}
+<button type="button" class="ghost" onclick="document.getElementById('{modal_id}').close()">Cancel</button>
+</dialog>"""
 
 
 def _page(title: str, body: str) -> HTMLResponse:
@@ -278,20 +291,22 @@ def _parse_permissions(text: str) -> list[tuple[str, str]]:
 @app.get("/roles", response_class=HTMLResponse)
 def roles_list():
     rows = "".join(_role_row(p) for p in catalog.list_profiles())
-    body = f"""<div class="card">
-<p><small>Roles give the AI context: what the person is, their access boundaries and what
-needs human approval. More content per role can be added later (skills matrix, seniority).</small></p>
-<table><tr><th>Role</th><th>Summary</th><th>Access</th><th>Needs approval</th><th></th></tr>
-{rows}</table></div>
-<div class="card"><h2>New role</h2>
-<form class="block" method="post" action="/roles">
+    new_role_form = """<form class="block" method="post" action="/roles">
 <label>Id (e.g. senior-qa)</label><input name="profile_id" required>
 <label>Name</label><input name="name" required>
 <label>Summary</label><input name="summary">
 <label>Permissions (one per line, "kind: value" — kinds: aws, ci_cd, repositories)</label>
 <textarea name="permissions" rows="3"></textarea>
 <label>Actions needing approval (one per line)</label><textarea name="approvals" rows="2"></textarea>
-<button>Create role</button></form></div>"""
+<button>Create role</button></form>"""
+    body = f"""<div class="card">
+<div class="card-head">
+<p><small>Roles give the AI context: what the person is, their access boundaries and what
+needs human approval. More content per role can be added later (skills matrix, seniority).</small></p>
+{_modal("new-role", "New role", "New role", new_role_form)}
+</div>
+<table><tr><th>Role</th><th>Summary</th><th>Access</th><th>Needs approval</th><th></th></tr>
+{rows}</table></div>"""
     return _page("Roles", body)
 
 
@@ -351,16 +366,16 @@ def tracks_list():
     role_checks = "".join(
         f'<label style="margin-right:12px"><input type="checkbox" name="profiles" value="{p["id"]}" '
         f'style="width:auto"> {p["name"]}</label>' for p in catalog.list_profiles())
-    body = f"""<div class="card">
-<table><tr><th>Track</th><th>Duration</th><th>For roles</th><th>Tasks</th><th></th></tr>
-{''.join(rows)}</table></div>
-<div class="card"><h2>New track</h2>
-<form class="block" method="post" action="/tracks">
+    new_track_form = f"""<form class="block" method="post" action="/tracks">
 <label>Id (e.g. qa-automation-track)</label><input name="track_id" required>
 <label>Name</label><input name="name" required>
 <label>Duration (weeks)</label><input name="duration_weeks" type="number" value="4">
 <label>For roles</label><div>{role_checks}</div><br>
-<button>Create track</button></form></div>"""
+<button>Create track</button></form>"""
+    body = f"""<div class="card">
+<div class="card-head"><h2>Tracks</h2>{_modal("new-track", "New track", "New track", new_track_form)}</div>
+<table><tr><th>Track</th><th>Duration</th><th>For roles</th><th>Tasks</th><th></th></tr>
+{''.join(rows)}</table></div>"""
     return _page("Tracks", body)
 
 
@@ -424,6 +439,38 @@ def _task_edit_row(task: dict) -> str:
 </form></td></tr>"""
 
 
+def _task_modal_card(track_id: str, rows: str, category_options: str, follow_options: str) -> str:
+    add_task_form = f"""<form class="block" method="post" action="/tracks/{track_id}/tasks">
+<label>Task</label><input name="title" required>
+<label>Description</label><input name="description">
+<label>Category</label><select name="category">{category_options}</select>
+<label>Deadline</label><input name="due_date" type="date">
+<label>AI follow-up frequency</label><select name="follow_up">{follow_options}</select>
+<label>Estimated hours</label><input name="est_hours" type="number" step="0.5">
+<label>Link (course / doc)</label><input name="link">
+<label>Contact (optional)</label><input name="contact_name">
+<label>Why this contact</label><input name="contact_note">
+<label><input type="checkbox" name="requires_approval" style="width:auto"> needs approval</label><br><br>
+<button>Add task</button></form>"""
+    return f"""<div class="card">
+<div class="card-head"><h2>Tasks</h2>{_modal("new-task", "Add task", "Add task", add_task_form)}</div>
+<table><tr><th>Task</th><th>Category</th><th>Deadline</th><th>Follow-up</th><th>Est. h</th><th>Approval</th><th></th></tr>
+{rows}</table></div>"""
+
+
+def _responsibles_card(track_id: str, responsibles: str) -> str:
+    add_responsible_form = f"""<form class="block" method="post" action="/tracks/{track_id}/responsibles">
+<label>Name</label><input name="name" required>
+<label>Email</label><input name="email" type="email" required>
+<label>Role</label>
+<select name="role"><option>people-lead</option><option>resourcing</option><option>capability-lead</option></select>
+<button>Add responsible</button></form>"""
+    return f"""<div class="card">
+<div class="card-head"><h2>Responsibles (receive the EOD report)</h2>
+{_modal("new-resp", "Add responsible", "Add responsible", add_responsible_form)}</div>
+<ul>{responsibles or '<li>None yet.</li>'}</ul></div>"""
+
+
 @app.get("/tracks/{track_id}", response_class=HTMLResponse)
 def track_detail(track_id: str):
     track = catalog.load_track(track_id)
@@ -445,29 +492,9 @@ def track_detail(track_id: str):
 <label>Duration (weeks)</label><input name="duration_weeks" type="number" value="{track['duration_weeks']}">
 <label>For roles</label><div>{role_checks}</div><br><button>Save settings</button></form></div>
 
-<div class="card"><h2>Tasks</h2>
-<table><tr><th>Task</th><th>Category</th><th>Deadline</th><th>Follow-up</th><th>Est. h</th><th>Approval</th><th></th></tr>
-{rows}</table>
-<h2>Add task</h2>
-<form method="post" action="/tracks/{track_id}/tasks">
-<input name="title" placeholder="Task" required style="width:30%">
-<input name="description" placeholder="Description" style="width:40%"><br>
-<select name="category">{category_options}</select>
-<input name="due_date" type="date">
-<select name="follow_up">{follow_options}</select>
-<input name="est_hours" type="number" step="0.5" placeholder="h" style="width:70px">
-<input name="contact_name" placeholder="Contact (optional)">
-<input name="contact_note" placeholder="Why this contact">
-<label style="white-space:nowrap"><input type="checkbox" name="requires_approval" style="width:auto"> needs approval</label>
-<button>Add task</button></form></div>
+{_task_modal_card(track_id, rows, category_options, follow_options)}
 
-<div class="card"><h2>Responsibles (receive the EOD report)</h2>
-<ul>{responsibles or '<li>None yet.</li>'}</ul>
-<form method="post" action="/tracks/{track_id}/responsibles">
-<input name="name" placeholder="Name" required>
-<input name="email" type="email" placeholder="Email" required>
-<select name="role"><option>people-lead</option><option>resourcing</option><option>capability-lead</option></select>
-<button>Add responsible</button></form></div>"""
+{_responsibles_card(track_id, responsibles)}"""
     return _page(f"{track['name']}", body)
 
 
