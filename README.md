@@ -168,6 +168,20 @@ BENCH_ENABLED=1 uv run python -m bench.graph --email ada@example.com --period pm
 
 Engine split (ADR 0002): **Strands** for conversation (`bench/strands_agent.py`, optional,
 needs AWS) and **LangGraph** for the scheduled daily cycle (`bench/graph.py`, runs local).
+There is also an **agentic LangGraph** variant where the LLM is bound to the bench tools
+(`bench/agent_graph.py`, `ToolNode` + `bind_tools`, needs AWS: `uv sync --extra agentic`).
+
+### Dev web UI (SQLite state)
+
+```bash
+uv sync --group ui
+BENCH_ENABLED=1 uv run --group ui uvicorn bench.webapp:app --reload
+# open http://127.0.0.1:8000
+```
+
+Dashboard for responsibles, person cycle (plan, AM/PM check-ins, EOD report) and a catalog
+editor for roles and tracks. Dev state lives in SQLite (`.local-progress/bench.db`);
+production swaps the same functions to DynamoDB.
 
 ## Design principle
 

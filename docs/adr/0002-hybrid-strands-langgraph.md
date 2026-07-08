@@ -26,6 +26,24 @@ AgentCore Runtime is framework-agnostic: it hosts Strands, LangGraph, or plain P
 - Production: both deployed on AgentCore Runtime; EventBridge triggers the graph at the two
   daily check-in times.
 
+## Update (2026-07, current LangGraph docs)
+
+Verified against docs.langchain.com (langgraph 1.x, docs moved off langchain-ai.github.io):
+
+- Our 0.2-style graph API (`StateGraph`, `START`/`END`, `add_conditional_edges`) is unchanged
+  in langgraph 1.x — `bench/graph.py` needs no migration.
+- The current way to **associate the model with tools** inside a graph is
+  `model.bind_tools(tools)` + `ToolNode` + `tools_condition` (`langgraph.prebuilt`, not
+  deprecated). Implemented in `bench/agent_graph.py`.
+- `create_react_agent` is deprecated in favor of `create_agent` from **langchain 1.x**
+  (`from langchain.agents import create_agent`, `prompt=` renamed to `system_prompt=`).
+- Bedrock models plug in via `langchain-aws`'s `ChatBedrockConverse`, which supports
+  `bind_tools`.
+
+This gives the Bench domain three orchestration flavors on one case, all deployable to
+AgentCore Runtime: deterministic pipeline (`graph.py`), agentic loop where the LLM decides
+per progress (`agent_graph.py`), and Strands agent (`strands_agent.py`).
+
 ## Consequences
 
 - Team learns both dominant patterns (agent-with-tools vs. state-machine workflow) on one case.
