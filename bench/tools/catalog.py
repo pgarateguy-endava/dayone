@@ -45,7 +45,7 @@ def load_track(track_id: str) -> dict[str, Any]:
         tasks = [_task_dict(conn, r) for r in conn.execute(
             "SELECT * FROM tasks WHERE track_id = ? ORDER BY sort, id", (track_id,))]
         responsibles = [dict(r) for r in conn.execute(
-            "SELECT name, email, role FROM responsibles WHERE track_id = ?", (track_id,))]
+            "SELECT id, name, email, role FROM responsibles WHERE track_id = ?", (track_id,))]
         profiles = [r["profile_id"] for r in conn.execute(
             "SELECT profile_id FROM track_profiles WHERE track_id = ?", (track_id,))]
     return {**dict(track), "tasks": tasks, "responsibles": responsibles,
@@ -115,3 +115,104 @@ def add_task_contact(task_id: int, name: str, email: str = "", note: str = "") -
     with connect() as conn:
         conn.execute("INSERT INTO task_contacts (task_id, name, email, note) VALUES (?, ?, ?, ?)",
                      (task_id, name, email, note))
+
+
+def load_task(task_id: int) -> dict[str, Any]:
+    """Load a single catalog task with its contacts."""
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Task {task_id} not found")
+        return _task_dict(conn, row)
+
+
+def update_task(task_id: int, *, title: str, description: str = "", category: str = "admin",
+                due_date: str | None = None, follow_up: str = "daily",
+                est_hours: float | None = None, link: str = "",
+                evidence_required: bool = True, requires_approval: bool = False,
+                contact_name: str = "", contact_note: str = "") -> None:
+    """Update a catalog task in place; replaces its contacts with the given one. (Write tool)"""
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tasks SET title = ?, description = ?, category = ?, due_date = ?, "
+            "follow_up = ?, est_hours = ?, link = ?, evidence_required = ?, "
+            "requires_approval = ? WHERE id = ?",
+            (title, description, category, due_date, follow_up, est_hours, link,
+             int(evidence_required), int(requires_approval), task_id))
+        conn.execute("DELETE FROM task_contacts WHERE task_id = ?", (task_id,))
+        if contact_name.strip():
+            conn.execute(
+                "INSERT INTO task_contacts (task_id, name, note) VALUES (?, ?, ?)",
+                (task_id, contact_name.strip(), contact_note.strip()))
+
+
+def delete_task(task_id: int) -> None:
+    """Delete a catalog task and its instances/contacts. (Write tool)"""
+    with connect() as conn:
+        conn.execute("DELETE FROM person_tasks WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM task_contacts WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+
+def delete_profile(profile_id: str) -> None:
+    """Delete a role. Refuses if someone on bench uses it. (Write tool)"""
+    with connect() as conn:
+        in_use = conn.execute("SELECT COUNT(*) FROM people WHERE profile_id = ?",
+                              (profile_id,)).fetchone()[0]
+        if in_use:
+            raise ValueError(f"Role '{profile_id}' is assigned to {in_use} person(s) on bench")
+        conn.execute("DELETE FROM profile_permissions WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM profile_approvals WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM track_profiles WHERE profile_id = ?", (profile_id,))
+        conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
+
+
+def create_track(track_id: str, name: str, duration_weeks: int,
+                 profile_ids: list[str] | None = None) -> None:
+    """Create a track. (Write tool)"""
+    with connect() as conn:
+        conn.execute("INSERT INTO tracks (id, name, duration_weeks) VALUES (?, ?, ?)",
+                     (track_id, name, duration_weeks))
+        conn.executemany("INSERT INTO track_profiles (track_id, profile_id) VALUES (?, ?)",
+                         [(track_id, p) for p in profile_ids or []])
+
+
+def update_track(track_id: str, name: str, duration_weeks: int,
+                 profile_ids: list[str] | None = None) -> None:
+    """Update track metadata and its role relations. (Write tool)"""
+    with connect() as conn:
+        conn.execute("UPDATE tracks SET name = ?, duration_weeks = ? WHERE id = ?",
+                     (name, duration_weeks, track_id))
+        conn.execute("DELETE FROM track_profiles WHERE track_id = ?", (track_id,))
+        conn.executemany("INSERT INTO track_profiles (track_id, profile_id) VALUES (?, ?)",
+                         [(track_id, p) for p in profile_ids or []])
+
+
+def delete_track(track_id: str) -> None:
+    """Delete a track and its tasks. Refuses if someone on bench uses it. (Write tool)"""
+    with connect() as conn:
+        in_use = conn.execute("SELECT COUNT(*) FROM people WHERE track_id = ?",
+                              (track_id,)).fetchone()[0]
+        if in_use:
+            raise ValueError(f"Track '{track_id}' is assigned to {in_use} person(s) on bench")
+        task_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM tasks WHERE track_id = ?", (track_id,))]
+        for task_id in task_ids:
+            conn.execute("DELETE FROM task_contacts WHERE task_id = ?", (task_id,))
+            conn.execute("DELETE FROM person_tasks WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE track_id = ?", (track_id,))
+        conn.execute("DELETE FROM responsibles WHERE track_id = ?", (track_id,))
+        conn.execute("DELETE FROM track_profiles WHERE track_id = ?", (track_id,))
+        conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+
+
+def add_responsible(track_id: str, name: str, email: str, role: str = "people-lead") -> None:
+    """Add an EOD-report recipient to a track. (Write tool)"""
+    with connect() as conn:
+        conn.execute("INSERT INTO responsibles (track_id, name, email, role) VALUES (?, ?, ?, ?)",
+                     (track_id, name, email, role))
+
+
+def delete_responsible(responsible_id: int) -> None:
+    with connect() as conn:
+        conn.execute("DELETE FROM responsibles WHERE id = ?", (responsible_id,))

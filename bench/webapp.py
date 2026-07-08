@@ -4,7 +4,8 @@ Views:
 - /            responsibles dashboard (everyone on bench, progress, blockers, deadline risk)
 - /onboard     assign a person to bench (employee + profile + track)
 - /person/...  person cycle: task board with status/evidence, AM/PM check-in, EOD report
-- /catalog     roles and tracks from the DB: relations, add tasks, add roles
+- /roles       ABM of roles (inline edit/delete) — context the AI uses for access boundaries
+- /tracks      ABM of tracks; /tracks/{id} = task ABM with inline edit/delete + responsibles
 
 Run:
     BENCH_ENABLED=1 uv run --group ui uvicorn bench.webapp:app --reload
@@ -23,14 +24,7 @@ from bench.config import bench_enabled
 from bench.db import FOLLOW_UP_OPTIONS, TASK_CATEGORIES, TASK_STATUSES
 from bench.graph import build_graph
 from bench.seed import seed_if_empty
-from bench.tools.catalog import (
-    create_task,
-    list_profiles,
-    list_tracks,
-    load_profile,
-    load_track,
-    upsert_profile,
-)
+from bench.tools import catalog
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
 from bench.tools.state import (
@@ -47,19 +41,21 @@ _CSS = """
 body { font-family: system-ui, sans-serif; margin: 0; background: #f6f5f2; color: #222; }
 nav { background: #1f2937; color: #fff; padding: 10px 24px; display: flex; gap: 18px; }
 nav a { color: #e5e7eb; text-decoration: none; font-weight: 600; }
-main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+main { max-width: 1150px; margin: 24px auto; padding: 0 16px; }
 .card { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 18px 22px; margin-bottom: 18px; }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
 .badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
 .ok { background: #dcfce7; color: #166534; } .warn { background: #fef9c3; color: #854d0e; }
 .bad { background: #fee2e2; color: #991b1b; } .info { background: #e0e7ff; color: #3730a3; }
-input, select, textarea { padding: 7px; margin: 3px 0 10px; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; }
-form.block input, form.block select, form.block textarea { width: 100%; }
-button { background: #1f2937; color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; font-weight: 600; cursor: pointer; }
+input, select, textarea { padding: 6px; margin: 2px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font: inherit; }
+form.block input, form.block select, form.block textarea { width: 100%; margin-bottom: 10px; }
+button { background: #1f2937; color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; font-weight: 600; cursor: pointer; }
+button.danger { background: #b91c1c; } button.ghost { background: #6b7280; }
 h1 { font-size: 22px; } h2 { font-size: 17px; }
 .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
 a { color: #1d4ed8; } small { color: #6b7280; }
+tr.editing td { background: #f8fafc; }
 """
 
 
@@ -69,7 +65,8 @@ def _page(title: str, body: str) -> HTMLResponse:
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>{_CSS}</style></head><body>
-<nav><a href="/">Dashboard</a><a href="/onboard">Onboard to bench</a><a href="/catalog">Catalog</a></nav>
+<nav><a href="/">Dashboard</a><a href="/onboard">Onboard to bench</a>
+<a href="/roles">Roles</a><a href="/tracks">Tracks</a></nav>
 <main><h1>{title}</h1>{body}</main></body></html>""")
 
 
@@ -108,14 +105,14 @@ def _status_badge(status: str) -> str:
     return f'<span class="badge {cls}">{status}</span>'
 
 
-# ---------- Dashboard (responsibles view) ----------
+# ---------- Dashboard ----------
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     rows = []
     for person in list_bench_people():
         state = load_bench_state(person["email"])
-        track = load_track(person["track_id"])
+        track = catalog.load_track(person["track_id"])
         verification = verify_progress(state, track)
         blockers = f'<span class="badge bad">{len(verification["blockers"])} blocker(s)</span>' \
             if verification["blockers"] else ""
@@ -136,12 +133,14 @@ def dashboard():
 
 @app.get("/onboard", response_class=HTMLResponse)
 def onboard_form():
-    options_p = "".join(f'<option value="{p["id"]}">{p["name"]}</option>' for p in list_profiles())
-    options_t = "".join(f'<option value="{t["id"]}">{t["name"]}</option>' for t in list_tracks())
+    options_p = "".join(f'<option value="{p["id"]}">{p["name"]}</option>'
+                        for p in catalog.list_profiles())
+    options_t = "".join(f'<option value="{t["id"]}">{t["name"]}</option>'
+                        for t in catalog.list_tracks())
     return _page("Onboard to bench", f"""<div class="card"><form class="block" method="post" action="/onboard">
 <label>Name</label><input name="employee" required>
 <label>Email</label><input name="email" type="email" required>
-<label>Profile (role — defines access)</label><select name="profile">{options_p}</select>
+<label>Role (context for the AI — defines access boundaries)</label><select name="profile">{options_p}</select>
 <label>Track (bench plan — tasks, deadlines, follow-up)</label><select name="track">{options_t}</select>
 <button>Create bench plan</button></form></div>""")
 
@@ -155,7 +154,7 @@ def onboard(employee: str = Form(...), email: str = Form(...),
 
 # ---------- Person cycle ----------
 
-def _task_row(email: str, task: dict) -> str:
+def _person_task_row(email: str, task: dict) -> str:
     status_options = "".join(
         f'<option value="{s}" {"selected" if s == task["status"] else ""}>{s}</option>'
         for s in TASK_STATUSES)
@@ -176,16 +175,15 @@ def _task_row(email: str, task: dict) -> str:
 @app.get("/person/{email}", response_class=HTMLResponse)
 def person_view(email: str):
     state = load_bench_state(email)
-    profile = load_profile(state["profile_id"])
-    track = load_track(state["track_id"])
+    profile = catalog.load_profile(state["profile_id"])
+    track = catalog.load_track(state["track_id"])
     verification = verify_progress(state, track)
     plan = generate_bench_plan(state["employee_name"], email, profile, track)
 
-    # merge catalog contacts into the person's task rows
     catalog_tasks = {t["id"]: t for t in track["tasks"]}
     for task in state["tasks"]:
         task["contacts"] = catalog_tasks.get(task["task_id"], {}).get("contacts", [])
-    task_rows = "".join(_task_row(email, t) for t in state["tasks"])
+    task_rows = "".join(_person_task_row(email, t) for t in state["tasks"])
 
     body = f"""
 <div class="card"><b>Today:</b> {_progress_badge(verification)} {_deadline_badge(verification)}
@@ -218,7 +216,6 @@ def person_task_update(email: str, task_id: int,
 async def person_checkin(email: str, request: Request):
     form = await request.form()
     planned = [p for p in [str(form.get("planned", "")).strip()] if p]
-    # The check-in runs through the LangGraph daily cycle (verifies, reports on PM).
     build_graph().invoke({
         "employee_email": email, "period": str(form["period"]),
         "task_updates": [], "planned": planned, "blockers": str(form.get("blockers", "")),
@@ -229,7 +226,7 @@ async def person_checkin(email: str, request: Request):
 @app.get("/person/{email}/report", response_class=HTMLResponse)
 def person_report(email: str):
     state = load_bench_state(email)
-    track = load_track(state["track_id"])
+    track = catalog.load_track(state["track_id"])
     verification = verify_progress(state, track)
     report = build_eod_report(state, track, verification)
     path = save_eod_report(report, email, verification["date"])
@@ -237,99 +234,315 @@ def person_report(email: str):
                                f'<p><i>Saved to {path} (simulated Teams delivery).</i></p></div>')
 
 
-# ---------- Catalog: roles, tracks and their relations (DB-backed) ----------
+# ---------- Roles ABM ----------
 
-@app.get("/catalog", response_class=HTMLResponse)
-def catalog():
-    tracks = list_tracks()
-    cards = []
-    for profile in list_profiles():
-        related = [t["id"] for t in tracks if profile["id"] in t["target_profiles"]]
-        aws = ", ".join(profile["permissions"].get("aws", [])) or "—"
-        approvals = ", ".join(profile["approvals_required"]) or "—"
-        cards.append(f"""<div class="card"><h2>{profile['name']} <small>({profile['id']})</small></h2>
-<p>{profile['summary']}</p>
-<p><b>AWS access:</b> {aws}<br><b>Needs approval:</b> {approvals}<br>
-<b>Bench tracks for this role:</b> {', '.join(related) or 'none'}</p></div>""")
+def _role_row(profile: dict) -> str:
+    perms = "<br>".join(f"<small><b>{k}:</b> {', '.join(v)}</small>"
+                        for k, v in profile["permissions"].items()) or "<small>—</small>"
+    approvals = ", ".join(profile["approvals_required"]) or "—"
+    return f"""<tr id="role-{profile['id']}">
+<td><b>{profile['name']}</b><br><small>{profile['id']}</small></td>
+<td>{profile['summary']}</td><td>{perms}</td><td><small>{approvals}</small></td>
+<td style="white-space:nowrap">
+<button hx-get="/roles/{profile['id']}/edit" hx-target="#role-{profile['id']}" hx-swap="outerHTML">Edit</button>
+<button class="danger" hx-post="/roles/{profile['id']}/delete" hx-target="#role-{profile['id']}"
+ hx-swap="outerHTML" hx-confirm="Delete role {profile['id']}?">Delete</button></td></tr>"""
 
-    for track in tracks:
-        rows = "".join(
-            f"<tr><td><b>{t['title']}</b><br><small>{t['description']}</small>"
-            + "".join(f"<br><small>👤 {c['name']}{' — ' + c['note'] if c['note'] else ''}</small>"
-                      for c in t["contacts"])
-            + f"</td><td>{t['category']}</td><td>{t['due_date'] or '—'}</td>"
-            f"<td>{FOLLOW_UP_LABELS.get(t['follow_up'], t['follow_up'])}</td>"
-            f"<td>{t['est_hours'] or '—'}</td>"
-            f"<td>{'yes' if t['requires_approval'] else 'no'}</td></tr>"
-            for t in track["tasks"])
-        category_options = "".join(f'<option value="{c}">{c}</option>' for c in TASK_CATEGORIES)
-        follow_options = "".join(
-            f'<option value="{f}">{FOLLOW_UP_LABELS[f]}</option>' for f in FOLLOW_UP_OPTIONS)
-        cards.append(f"""<div class="card">
-<h2>{track['name']} <small>({track['id']}, {track['duration_weeks']} weeks,
-for: {', '.join(track['target_profiles'])})</small></h2>
-<table><tr><th>Task</th><th>Category</th><th>Deadline</th><th>Follow-up</th><th>Est. h</th><th>Approval</th></tr>
-{rows}</table>
-<h2>Add task</h2>
-<form method="post" action="/catalog/track/{track['id']}/task">
-<input name="title" placeholder="Task" required style="width:30%">
-<input name="description" placeholder="Description" style="width:40%">
-<select name="category">{category_options}</select>
-<input name="due_date" type="date">
-<select name="follow_up">{follow_options}</select>
-<input name="est_hours" type="number" step="0.5" placeholder="h" style="width:60px">
-<input name="contact_name" placeholder="Contact (optional)">
-<input name="contact_note" placeholder="Why this contact">
-<label style="white-space:nowrap"><input type="checkbox" name="requires_approval" style="width:auto"> needs approval</label>
-<button>Add</button></form></div>""")
 
-    cards.append("""<div class="card"><h2>Add role</h2>
-<form class="block" method="post" action="/catalog/profile">
+def _role_edit_row(profile: dict) -> str:
+    perms_text = "&#10;".join(f"{k}: {v}" for k, values in profile["permissions"].items()
+                              for v in values)
+    approvals_text = "&#10;".join(profile["approvals_required"])
+    return f"""<tr id="role-{profile['id']}" class="editing">
+<td colspan="5"><form hx-post="/roles/{profile['id']}" hx-target="#role-{profile['id']}" hx-swap="outerHTML">
+<b>{profile['id']}</b><br>
+<input name="name" value="{profile['name']}" placeholder="Name" style="width:30%">
+<input name="summary" value="{profile['summary']}" placeholder="Summary" style="width:60%"><br>
+<textarea name="permissions" rows="4" placeholder="aws: staging-read" style="width:45%">{perms_text}</textarea>
+<textarea name="approvals" rows="4" placeholder="prod-write" style="width:45%">{approvals_text}</textarea><br>
+<button>Save</button>
+<button type="button" class="ghost" hx-get="/roles/{profile['id']}/row"
+ hx-target="#role-{profile['id']}" hx-swap="outerHTML">Cancel</button>
+</form></td></tr>"""
+
+
+def _parse_permissions(text: str) -> list[tuple[str, str]]:
+    rows = []
+    for line in text.splitlines():
+        kind, _, value = line.partition(":")
+        if kind.strip() and value.strip():
+            rows.append((kind.strip(), value.strip()))
+    return rows
+
+
+@app.get("/roles", response_class=HTMLResponse)
+def roles_list():
+    rows = "".join(_role_row(p) for p in catalog.list_profiles())
+    body = f"""<div class="card">
+<p><small>Roles give the AI context: what the person is, their access boundaries and what
+needs human approval. More content per role can be added later (skills matrix, seniority).</small></p>
+<table><tr><th>Role</th><th>Summary</th><th>Access</th><th>Needs approval</th><th></th></tr>
+{rows}</table></div>
+<div class="card"><h2>New role</h2>
+<form class="block" method="post" action="/roles">
 <label>Id (e.g. senior-qa)</label><input name="profile_id" required>
 <label>Name</label><input name="name" required>
 <label>Summary</label><input name="summary">
 <label>Permissions (one per line, "kind: value" — kinds: aws, ci_cd, repositories)</label>
-<textarea name="permissions" rows="4" placeholder="aws: staging-read&#10;ci_cd: view-build-logs"></textarea>
-<label>Actions needing approval (one per line)</label>
-<textarea name="approvals" rows="2" placeholder="prod-write"></textarea>
-<button>Save role</button></form></div>""")
-    return _page("Catalog — roles & tracks", "".join(cards))
+<textarea name="permissions" rows="3"></textarea>
+<label>Actions needing approval (one per line)</label><textarea name="approvals" rows="2"></textarea>
+<button>Create role</button></form></div>"""
+    return _page("Roles", body)
 
 
-@app.post("/catalog/track/{track_id}/task")
-async def catalog_add_task(track_id: str, request: Request):
+@app.post("/roles")
+def roles_create(profile_id: str = Form(...), name: str = Form(...), summary: str = Form(""),
+                 permissions: str = Form(""), approvals: str = Form("")):
+    catalog.upsert_profile(profile_id.strip(), name.strip(), summary.strip(),
+                           _parse_permissions(permissions),
+                           [line.strip() for line in approvals.splitlines() if line.strip()])
+    return RedirectResponse("/roles", status_code=303)
+
+
+@app.get("/roles/{profile_id}/row", response_class=HTMLResponse)
+def role_row(profile_id: str):
+    return HTMLResponse(_role_row(catalog.load_profile(profile_id)))
+
+
+@app.get("/roles/{profile_id}/edit", response_class=HTMLResponse)
+def role_edit(profile_id: str):
+    return HTMLResponse(_role_edit_row(catalog.load_profile(profile_id)))
+
+
+@app.post("/roles/{profile_id}", response_class=HTMLResponse)
+def role_save(profile_id: str, name: str = Form(...), summary: str = Form(""),
+              permissions: str = Form(""), approvals: str = Form("")):
+    catalog.upsert_profile(profile_id, name.strip(), summary.strip(),
+                           _parse_permissions(permissions),
+                           [line.strip() for line in approvals.splitlines() if line.strip()])
+    return HTMLResponse(_role_row(catalog.load_profile(profile_id)))
+
+
+@app.post("/roles/{profile_id}/delete", response_class=HTMLResponse)
+def role_delete(profile_id: str):
+    try:
+        catalog.delete_profile(profile_id)
+        return HTMLResponse("")
+    except ValueError as exc:
+        profile = catalog.load_profile(profile_id)
+        row = _role_row(profile)
+        return HTMLResponse(row.replace("</td></tr>",
+                                        f'<br><span class="badge bad">{exc}</span></td></tr>'))
+
+
+# ---------- Tracks ABM ----------
+
+@app.get("/tracks", response_class=HTMLResponse)
+def tracks_list():
+    rows = []
+    for track in catalog.list_tracks():
+        rows.append(f"""<tr id="track-{track['id']}">
+<td><a href="/tracks/{track['id']}"><b>{track['name']}</b></a><br><small>{track['id']}</small></td>
+<td>{track['duration_weeks']} weeks</td>
+<td>{', '.join(track['target_profiles']) or '—'}</td>
+<td>{len(track['tasks'])} tasks</td>
+<td><button class="danger" hx-post="/tracks/{track['id']}/delete" hx-target="#track-{track['id']}"
+ hx-swap="outerHTML" hx-confirm="Delete track {track['id']} and its tasks?">Delete</button></td></tr>""")
+    role_checks = "".join(
+        f'<label style="margin-right:12px"><input type="checkbox" name="profiles" value="{p["id"]}" '
+        f'style="width:auto"> {p["name"]}</label>' for p in catalog.list_profiles())
+    body = f"""<div class="card">
+<table><tr><th>Track</th><th>Duration</th><th>For roles</th><th>Tasks</th><th></th></tr>
+{''.join(rows)}</table></div>
+<div class="card"><h2>New track</h2>
+<form class="block" method="post" action="/tracks">
+<label>Id (e.g. qa-automation-track)</label><input name="track_id" required>
+<label>Name</label><input name="name" required>
+<label>Duration (weeks)</label><input name="duration_weeks" type="number" value="4">
+<label>For roles</label><div>{role_checks}</div><br>
+<button>Create track</button></form></div>"""
+    return _page("Tracks", body)
+
+
+@app.post("/tracks")
+async def tracks_create(request: Request):
     form = await request.form()
-    contacts = []
-    if str(form.get("contact_name", "")).strip():
-        contacts.append({"name": str(form["contact_name"]).strip(),
-                         "note": str(form.get("contact_note", "")).strip()})
-    create_task(
-        track_id,
-        title=str(form["title"]),
-        description=str(form.get("description", "")),
-        category=str(form.get("category", "admin")),
-        due_date=str(form.get("due_date")) or None,
-        follow_up=str(form.get("follow_up", "daily")),
-        est_hours=float(form["est_hours"]) if str(form.get("est_hours", "")).strip() else None,
-        requires_approval=form.get("requires_approval") is not None,
-        contacts=contacts,
-    )
-    return RedirectResponse("/catalog", status_code=303)
+    catalog.create_track(str(form["track_id"]).strip(), str(form["name"]).strip(),
+                         int(str(form.get("duration_weeks", "4"))), form.getlist("profiles"))
+    return RedirectResponse(f"/tracks/{str(form['track_id']).strip()}", status_code=303)
 
 
-@app.post("/catalog/profile")
-def catalog_add_profile(profile_id: str = Form(...), name: str = Form(...),
-                        summary: str = Form(""), permissions: str = Form(""),
-                        approvals: str = Form("")):
-    permission_rows = []
-    for line in permissions.splitlines():
-        kind, _, value = line.partition(":")
-        if kind.strip() and value.strip():
-            permission_rows.append((kind.strip(), value.strip()))
-    approval_rows = [line.strip() for line in approvals.splitlines() if line.strip()]
-    upsert_profile(profile_id.strip(), name.strip(), summary.strip(),
-                   permission_rows, approval_rows)
-    return RedirectResponse("/catalog", status_code=303)
+@app.post("/tracks/{track_id}/delete", response_class=HTMLResponse)
+def track_delete(track_id: str):
+    try:
+        catalog.delete_track(track_id)
+        return HTMLResponse("")
+    except ValueError as exc:
+        return HTMLResponse(f'<tr id="track-{track_id}"><td colspan="5">'
+                            f'<span class="badge bad">{exc}</span></td></tr>')
+
+
+def _task_row(task: dict) -> str:
+    contact = task["contacts"][0] if task["contacts"] else None
+    contact_html = (f'<br><small>👤 {contact["name"]}'
+                    f'{" — " + contact["note"] if contact["note"] else ""}</small>') if contact else ""
+    return f"""<tr id="task-{task['id']}">
+<td><b>{task['title']}</b><br><small>{task['description']}</small>{contact_html}</td>
+<td>{task['category']}</td><td>{task['due_date'] or '—'}</td>
+<td>{FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up'])}</td>
+<td>{task['est_hours'] or '—'}</td><td>{'yes' if task['requires_approval'] else 'no'}</td>
+<td style="white-space:nowrap">
+<button hx-get="/tasks/{task['id']}/edit" hx-target="#task-{task['id']}" hx-swap="outerHTML">Edit</button>
+<button class="danger" hx-post="/tasks/{task['id']}/delete" hx-target="#task-{task['id']}"
+ hx-swap="outerHTML" hx-confirm="Delete task '{task['title']}'?">Delete</button></td></tr>"""
+
+
+def _task_edit_row(task: dict) -> str:
+    contact = task["contacts"][0] if task["contacts"] else {"name": "", "note": ""}
+    category_options = "".join(
+        f'<option value="{c}" {"selected" if c == task["category"] else ""}>{c}</option>'
+        for c in TASK_CATEGORIES)
+    follow_options = "".join(
+        f'<option value="{f}" {"selected" if f == task["follow_up"] else ""}>{FOLLOW_UP_LABELS[f]}</option>'
+        for f in FOLLOW_UP_OPTIONS)
+    return f"""<tr id="task-{task['id']}" class="editing">
+<td colspan="7"><form hx-post="/tasks/{task['id']}" hx-target="#task-{task['id']}" hx-swap="outerHTML">
+<input name="title" value="{task['title']}" placeholder="Task" style="width:32%" required>
+<input name="description" value="{task['description']}" placeholder="Description" style="width:55%"><br>
+<select name="category">{category_options}</select>
+<input name="due_date" type="date" value="{task['due_date'] or ''}">
+<select name="follow_up">{follow_options}</select>
+<input name="est_hours" type="number" step="0.5" value="{task['est_hours'] or ''}" placeholder="h" style="width:70px">
+<input name="link" value="{task['link']}" placeholder="Link" style="width:20%">
+<label style="white-space:nowrap"><input type="checkbox" name="requires_approval" style="width:auto"
+ {'checked' if task['requires_approval'] else ''}> needs approval</label><br>
+<input name="contact_name" value="{contact['name']}" placeholder="Contact (optional)">
+<input name="contact_note" value="{contact['note']}" placeholder="Why this contact" style="width:40%">
+<button>Save</button>
+<button type="button" class="ghost" hx-get="/tasks/{task['id']}/row"
+ hx-target="#task-{task['id']}" hx-swap="outerHTML">Cancel</button>
+</form></td></tr>"""
+
+
+@app.get("/tracks/{track_id}", response_class=HTMLResponse)
+def track_detail(track_id: str):
+    track = catalog.load_track(track_id)
+    rows = "".join(_task_row(t) for t in track["tasks"])
+    role_checks = "".join(
+        f'<label style="margin-right:12px"><input type="checkbox" name="profiles" value="{p["id"]}" '
+        f'style="width:auto" {"checked" if p["id"] in track["target_profiles"] else ""}> {p["name"]}</label>'
+        for p in catalog.list_profiles())
+    category_options = "".join(f'<option value="{c}">{c}</option>' for c in TASK_CATEGORIES)
+    follow_options = "".join(f'<option value="{f}">{FOLLOW_UP_LABELS[f]}</option>'
+                             for f in FOLLOW_UP_OPTIONS)
+    responsibles = "".join(
+        f'<li id="resp-{r["id"]}">{r["name"]} &lt;{r["email"]}&gt; ({r["role"]}) '
+        f'<button class="danger" hx-post="/responsibles/{r["id"]}/delete" hx-target="#resp-{r["id"]}" '
+        f'hx-swap="outerHTML">×</button></li>' for r in track["responsibles"])
+    body = f"""<div class="card"><h2>Track settings</h2>
+<form class="block" method="post" action="/tracks/{track_id}/meta">
+<label>Name</label><input name="name" value="{track['name']}">
+<label>Duration (weeks)</label><input name="duration_weeks" type="number" value="{track['duration_weeks']}">
+<label>For roles</label><div>{role_checks}</div><br><button>Save settings</button></form></div>
+
+<div class="card"><h2>Tasks</h2>
+<table><tr><th>Task</th><th>Category</th><th>Deadline</th><th>Follow-up</th><th>Est. h</th><th>Approval</th><th></th></tr>
+{rows}</table>
+<h2>Add task</h2>
+<form method="post" action="/tracks/{track_id}/tasks">
+<input name="title" placeholder="Task" required style="width:30%">
+<input name="description" placeholder="Description" style="width:40%"><br>
+<select name="category">{category_options}</select>
+<input name="due_date" type="date">
+<select name="follow_up">{follow_options}</select>
+<input name="est_hours" type="number" step="0.5" placeholder="h" style="width:70px">
+<input name="contact_name" placeholder="Contact (optional)">
+<input name="contact_note" placeholder="Why this contact">
+<label style="white-space:nowrap"><input type="checkbox" name="requires_approval" style="width:auto"> needs approval</label>
+<button>Add task</button></form></div>
+
+<div class="card"><h2>Responsibles (receive the EOD report)</h2>
+<ul>{responsibles or '<li>None yet.</li>'}</ul>
+<form method="post" action="/tracks/{track_id}/responsibles">
+<input name="name" placeholder="Name" required>
+<input name="email" type="email" placeholder="Email" required>
+<select name="role"><option>people-lead</option><option>resourcing</option><option>capability-lead</option></select>
+<button>Add responsible</button></form></div>"""
+    return _page(f"{track['name']}", body)
+
+
+@app.post("/tracks/{track_id}/meta")
+async def track_meta(track_id: str, request: Request):
+    form = await request.form()
+    catalog.update_track(track_id, str(form["name"]).strip(),
+                         int(str(form.get("duration_weeks", "4"))), form.getlist("profiles"))
+    return RedirectResponse(f"/tracks/{track_id}", status_code=303)
+
+
+async def _task_fields(request: Request) -> dict:
+    form = await request.form()
+    return {
+        "title": str(form["title"]).strip(),
+        "description": str(form.get("description", "")).strip(),
+        "category": str(form.get("category", "admin")),
+        "due_date": str(form.get("due_date") or "") or None,
+        "follow_up": str(form.get("follow_up", "daily")),
+        "est_hours": float(str(form["est_hours"])) if str(form.get("est_hours", "")).strip() else None,
+        "link": str(form.get("link", "")).strip(),
+        "requires_approval": form.get("requires_approval") is not None,
+        "contact_name": str(form.get("contact_name", "")).strip(),
+        "contact_note": str(form.get("contact_note", "")).strip(),
+    }
+
+
+@app.post("/tracks/{track_id}/tasks")
+async def track_add_task(track_id: str, request: Request):
+    fields = await _task_fields(request)
+    contact_name, contact_note = fields.pop("contact_name"), fields.pop("contact_note")
+    contacts = [{"name": contact_name, "note": contact_note}] if contact_name else []
+    catalog.create_task(track_id, contacts=contacts, **fields)
+    return RedirectResponse(f"/tracks/{track_id}", status_code=303)
+
+
+@app.get("/tasks/{task_id}/row", response_class=HTMLResponse)
+def task_row(task_id: int):
+    return HTMLResponse(_task_row(catalog.load_task(task_id)))
+
+
+@app.get("/tasks/{task_id}/edit", response_class=HTMLResponse)
+def task_edit(task_id: int):
+    return HTMLResponse(_task_edit_row(catalog.load_task(task_id)))
+
+
+@app.post("/tasks/{task_id}", response_class=HTMLResponse)
+async def task_save(task_id: int, request: Request):
+    catalog.update_task(task_id, **(await _task_fields(request)))
+    return HTMLResponse(_task_row(catalog.load_task(task_id)))
+
+
+@app.post("/tasks/{task_id}/delete", response_class=HTMLResponse)
+def task_delete(task_id: int):
+    catalog.delete_task(task_id)
+    return HTMLResponse("")
+
+
+@app.post("/tracks/{track_id}/responsibles")
+def track_add_responsible(track_id: str, name: str = Form(...), email: str = Form(...),
+                          role: str = Form("people-lead")):
+    catalog.add_responsible(track_id, name.strip(), email.strip(), role)
+    return RedirectResponse(f"/tracks/{track_id}", status_code=303)
+
+
+@app.post("/responsibles/{responsible_id}/delete", response_class=HTMLResponse)
+def responsible_delete(responsible_id: int):
+    catalog.delete_responsible(responsible_id)
+    return HTMLResponse("")
+
+
+# Backwards-compatible redirect from the old combined page
+@app.get("/catalog")
+def catalog_redirect():
+    return RedirectResponse("/roles", status_code=303)
 
 
 if __name__ == "__main__":  # pragma: no cover

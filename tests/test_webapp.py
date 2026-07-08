@@ -50,24 +50,65 @@ def test_onboard_task_update_and_dashboard(client):
     assert "EOD report - Ada Lovelace" in client.get("/person/ada@test.com/report").text
 
 
-def test_catalog_add_task_and_role(client):
-    page = client.get("/catalog").text
+def test_roles_abm_create_edit_delete(client):
+    page = client.get("/roles").text
     assert "Senior Developer" in page  # seeded senior-dev role
-    assert "AWS Backend Upskilling Track" in page
 
-    response = client.post("/catalog/track/aws-backend-track/task", data={
-        "title": "Security fundamentals", "description": "Internal course",
-        "category": "course", "due_date": "2026-09-01", "follow_up": "weekly",
-        "est_hours": "4", "contact_name": "Sofía Ruiz", "contact_note": "took it last year",
-    }, follow_redirects=False)
-    assert response.status_code == 303
-    page = client.get("/catalog").text
-    assert "Security fundamentals" in page and "Sofía Ruiz" in page
-
-    response = client.post("/catalog/profile", data={
+    # create
+    response = client.post("/roles", data={
         "profile_id": "senior-qa", "name": "Senior QA", "summary": "QA leads on bench",
         "permissions": "aws: staging-read\nci_cd: view-build-logs",
         "approvals": "prod-access",
     }, follow_redirects=False)
     assert response.status_code == 303
-    assert "Senior QA" in client.get("/catalog").text
+    assert "Senior QA" in client.get("/roles").text
+
+    # inline edit fragment + save
+    assert "senior-qa" in client.get("/roles/senior-qa/edit").text
+    saved = client.post("/roles/senior-qa", data={
+        "name": "Senior QA Lead", "summary": "Updated", "permissions": "aws: staging-read",
+        "approvals": "",
+    }).text
+    assert "Senior QA Lead" in saved
+
+    # delete unused role → empty fragment removes the row
+    assert client.post("/roles/senior-qa/delete").text == ""
+
+
+def test_tracks_abm_task_inline_edit_and_delete(client):
+    page = client.get("/tracks").text
+    assert "AWS Backend Upskilling Track" in page and "8 tasks" in page
+
+    detail = client.get("/tracks/aws-backend-track").text
+    assert "Juan Pérez" in detail and "Add task" in detail
+
+    # add task
+    response = client.post("/tracks/aws-backend-track/tasks", data={
+        "title": "Security fundamentals", "description": "Internal course",
+        "category": "course", "due_date": "2026-09-01", "follow_up": "weekly",
+        "est_hours": "4", "contact_name": "Sofía Ruiz", "contact_note": "took it last year",
+    }, follow_redirects=False)
+    assert response.status_code == 303
+    detail = client.get("/tracks/aws-backend-track").text
+    assert "Security fundamentals" in detail and "Sofía Ruiz" in detail
+
+    # inline edit + save (task 1 seeded)
+    assert 'name="title"' in client.get("/tasks/1/edit").text
+    saved = client.post("/tasks/1", data={
+        "title": "AWS CP Essentials (v2)", "description": "Updated", "category": "course",
+        "due_date": "2026-07-30", "follow_up": "daily", "est_hours": "12",
+        "link": "", "contact_name": "Juan Pérez", "contact_note": "mentor",
+    }).text
+    assert "AWS CP Essentials (v2)" in saved
+
+    # delete
+    assert client.post("/tasks/1/delete").text == ""
+    assert "AWS CP Essentials (v2)" not in client.get("/tracks/aws-backend-track").text
+
+
+def test_delete_role_in_use_is_refused(client):
+    client.post("/onboard", data={
+        "employee": "Ada", "email": "ada@test.com",
+        "profile": "backend-dev", "track": "aws-backend-track"}, follow_redirects=False)
+    refused = client.post("/roles/backend-dev/delete").text
+    assert "assigned" in refused  # row comes back with the error badge
