@@ -38,18 +38,19 @@ except ImportError as exc:  # pragma: no cover
 
 from bench.config import require_bench_enabled
 from bench.prompts import BENCH_SYSTEM_PROMPT
-from bench.tools.load_track import load_track as _load_track
+from bench.tools.catalog import load_track as _load_track
 from bench.tools.state import load_bench_state as _load_bench_state
-from bench.tools.verify_goals import verify_daily_goals as _verify_daily_goals
+from bench.tools.verify_goals import verify_progress as _verify_progress
 
 
 @tool
 def get_bench_status(employee_email: str) -> dict:
-    """Get today's verified progress for a person on bench: goals met/missed (decided
-    deterministically from check-ins, never by the model), blockers and deadline risks."""
+    """Get today's verified progress for a person on bench: task statuses and follow-ups
+    (decided deterministically from the database, never by the model), blockers and
+    deadline risks."""
     state = _load_bench_state(employee_email)
     track = _load_track(state["track_id"])
-    return _verify_daily_goals(state, track)
+    return _verify_progress(state, track)
 
 
 @tool

@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from bench.config import REPORTS_DIR
+from bench.tools.verify_goals import FOLLOW_UP_LABELS
 
-_LEVEL_LABEL = {"overdue": "OVERDUE", "at_risk": "AT RISK", "ok": "ok"}
+_LEVEL_LABEL = {"overdue": "OVERDUE", "at_risk": "AT RISK", "ok": "ok", "done": "done"}
 
 
 def build_eod_report(
@@ -19,13 +20,18 @@ def build_eod_report(
     summary: str = "",
 ) -> str:
     """Render the EOD report Markdown from a verification result."""
-    met = [f"[x] ({m['goal']}) {m['text']}"
-           + (f" — evidence: {', '.join(m['evidence'])}" if m["evidence"] else " — no evidence")
-           for m in verification["met"]]
-    missed = [f"[ ] ({m['goal']}) {m['text']}" for m in verification["missed"]]
-    deadlines = [f"`{d['due']}` ({d['days_left']:+d}d, {_LEVEL_LABEL[d['level']]}) — {d['description']}"
-                 for d in verification["deadlines"]]
-    blockers = verification["blockers"]
+    followed = []
+    for item in verification["follow_up_today"]:
+        mark = "x" if item["touched_today"] else " "
+        extra = f" — evidence: {item['evidence']}" if item["evidence"] else ""
+        if item["missing_evidence"]:
+            extra = " — ⚠ evidence required but missing"
+        followed.append(
+            f"[{mark}] {item['title']} ({item['status']}, "
+            f"{FOLLOW_UP_LABELS.get(item['follow_up'], item['follow_up'])}){extra}")
+
+    deadlines = [f"`{d['due']}` ({d['days_left']:+d}d, {_LEVEL_LABEL[d['level']]}) — {d['title']}"
+                 for d in verification["deadlines"] if d["level"] != "done"]
     responsibles = ", ".join(r["email"] for r in track.get("responsibles", [])) or "pending"
 
     def bullets(items: list[str]) -> str:
@@ -36,23 +42,20 @@ def build_eod_report(
 **To:** {responsibles}
 **Track:** {track.get('name')} | **Profile:** {state['profile_id']}
 **Check-ins today:** AM {'yes' if verification['checked_in_am'] else 'NO'} / PM {'yes' if verification['checked_in_pm'] else 'NO'}
-**Daily goals:** {verification['goals_met']}/{verification['goals_total']} ({int(verification['completion_rate'] * 100)}%)
+**Overall:** {verification['tasks_done']}/{verification['tasks_total']} tasks done ({int(verification['completion_rate'] * 100)}%)
+**Today's follow-up:** {verification['touched_today']} touched / {verification['pending_today']} untouched
 
 ## Summary
 
 {summary or 'Deterministic report (LLM summary disabled).'}
 
-## Goals met
+## Tasks followed up today
 
-{bullets(met)}
-
-## Goals missed
-
-{bullets(missed)}
+{bullets(followed)}
 
 ## Blockers
 
-{bullets(blockers)}
+{bullets(verification['blockers'])}
 
 ## Deadlines
 

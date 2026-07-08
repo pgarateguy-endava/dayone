@@ -1,13 +1,15 @@
-"""Bench Assistant - local CLI (Lab 1 parity: no SDK, no AWS).
+"""Bench Assistant - local CLI over the SQLite catalog (no SDK, no AWS).
 
 Usage examples:
 
+    python -m bench.seed                     # load dummy catalog data (first time)
     python -m bench.app start --employee "Ada Lovelace" --email ada@example.com \\
         --profile backend-dev --track aws-backend-track
     python -m bench.app plan --email ada@example.com
+    python -m bench.app tasks --email ada@example.com
+    python -m bench.app task --email ada@example.com --id 3 --status in_progress \\
+        --evidence "course at 45%"
     python -m bench.app checkin --email ada@example.com --period am --planned "Course module 3"
-    python -m bench.app checkin --email ada@example.com --period pm \\
-        --done "1:course at 45%" --done "2:https://github.com/me/repo/commit/abc" --blockers ""
     python -m bench.app verify --email ada@example.com
     python -m bench.app report --email ada@example.com
 """
@@ -16,13 +18,18 @@ from __future__ import annotations
 import argparse
 import json
 
-from agent.tools.load_profile import load_profile
 from bench.config import require_bench_enabled
+from bench.seed import seed_if_empty
+from bench.tools.catalog import load_profile, load_track
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
-from bench.tools.load_track import load_track
-from bench.tools.state import load_bench_state, record_check_in, start_bench
-from bench.tools.verify_goals import verify_daily_goals
+from bench.tools.state import (
+    load_bench_state,
+    record_check_in,
+    start_bench,
+    update_task_status,
+)
+from bench.tools.verify_goals import verify_progress
 
 
 def _plan_from_state(state: dict) -> str:
@@ -31,17 +38,9 @@ def _plan_from_state(state: dict) -> str:
     return generate_bench_plan(state["employee_name"], state["employee_email"], profile, track)
 
 
-def _parse_done(values: list[str]) -> list[dict]:
-    """Parse repeated --done 'N[:evidence]' flags into goal/evidence dicts."""
-    done = []
-    for value in values:
-        goal, _, evidence = value.partition(":")
-        done.append({"goal": int(goal), "evidence": evidence.strip()})
-    return done
-
-
 def main() -> None:
     require_bench_enabled()
+    seed_if_empty()
     parser = argparse.ArgumentParser(prog="bench.app", description="Bench Assistant (local MVP)")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -51,25 +50,29 @@ def main() -> None:
     p_start.add_argument("--profile", required=True)
     p_start.add_argument("--track", required=True)
 
-    p_plan = sub.add_parser("plan", help="Print the bench plan")
-    p_plan.add_argument("--email", required=True)
+    for name, help_text in (("plan", "Print the bench plan"),
+                            ("tasks", "List the person's tasks with status"),
+                            ("verify", "Verify today's progress (deterministic)"),
+                            ("report", "Build and save the EOD report")):
+        p = sub.add_parser(name, help=help_text)
+        p.add_argument("--email", required=True)
+        if name in ("verify", "report"):
+            p.add_argument("--date", default=None)
+
+    p_task = sub.add_parser("task", help="Update a task's status/evidence")
+    p_task.add_argument("--email", required=True)
+    p_task.add_argument("--id", type=int, required=True)
+    p_task.add_argument("--status", required=True,
+                        choices=["pending", "in_progress", "done", "blocked"])
+    p_task.add_argument("--evidence", default="")
+    p_task.add_argument("--note", default="")
 
     p_check = sub.add_parser("checkin", help="Record an AM/PM check-in")
     p_check.add_argument("--email", required=True)
     p_check.add_argument("--period", required=True, choices=["am", "pm"])
-    p_check.add_argument("--planned", action="append", default=[], help="AM: what you'll work on")
-    p_check.add_argument("--done", action="append", default=[],
-                         help="PM: goal number with optional evidence, e.g. '1:course at 45%%'")
+    p_check.add_argument("--planned", action="append", default=[])
     p_check.add_argument("--blockers", default="")
     p_check.add_argument("--note", default="")
-
-    p_verify = sub.add_parser("verify", help="Verify today's goals (deterministic)")
-    p_verify.add_argument("--email", required=True)
-    p_verify.add_argument("--date", default=None)
-
-    p_report = sub.add_parser("report", help="Build and save the EOD report")
-    p_report.add_argument("--email", required=True)
-    p_report.add_argument("--date", default=None)
 
     args = parser.parse_args()
 
@@ -78,20 +81,28 @@ def main() -> None:
         print(_plan_from_state(state))
     elif args.command == "plan":
         print(_plan_from_state(load_bench_state(args.email)))
+    elif args.command == "tasks":
+        state = load_bench_state(args.email)
+        for task in state["tasks"]:
+            due = f" due {task['due_date']}" if task["due_date"] else ""
+            print(f"#{task['task_id']} [{task['status']}] {task['title']} "
+                  f"({task['category']}, {task['follow_up']}{due})")
+    elif args.command == "task":
+        print(json.dumps(update_task_status(args.email, args.id, args.status,
+                                            args.evidence, args.note),
+                         indent=2, ensure_ascii=False))
     elif args.command == "checkin":
-        event = record_check_in(
-            args.email, args.period, done_goals=_parse_done(args.done),
-            planned=args.planned, blockers=args.blockers, note=args.note,
-        )
-        print(json.dumps(event, indent=2, ensure_ascii=False))
+        print(json.dumps(record_check_in(args.email, args.period, planned=args.planned,
+                                         blockers=args.blockers, note=args.note),
+                         indent=2, ensure_ascii=False))
     elif args.command == "verify":
         state = load_bench_state(args.email)
         track = load_track(state["track_id"])
-        print(json.dumps(verify_daily_goals(state, track, args.date), indent=2, ensure_ascii=False))
+        print(json.dumps(verify_progress(state, track, args.date), indent=2, ensure_ascii=False))
     elif args.command == "report":
         state = load_bench_state(args.email)
         track = load_track(state["track_id"])
-        verification = verify_daily_goals(state, track, args.date)
+        verification = verify_progress(state, track, args.date)
         report = build_eod_report(state, track, verification)
         path = save_eod_report(report, args.email, verification["date"])
         print(report)

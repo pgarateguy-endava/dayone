@@ -2,21 +2,19 @@
 
 Fixed pipeline (this is deliberately NOT an agent — the order must be guaranteed):
 
-    load_context -> record_check_in -> verify_goals -> [pm only] summarize -> report -> notify
+    load_context -> check_in -> verify -> [pm only] summarize -> report -> notify
 
 - Runs fully offline: every node is deterministic.
 - The `summarize` node optionally uses Bedrock (env BENCH_USE_LLM=1 + boto3 + model access);
   on any failure it falls back to a deterministic summary. The LLM only rephrases the
-  verification result; it never decides goal completion.
+  verification result; it never decides task status.
 - Production: deployed on AgentCore Runtime, triggered twice a day by EventBridge;
   `notify` posts to Teams instead of writing a file.
-
-Requires: pip install langgraph
 
 Usage:
 
     python -m bench.graph --email ada@example.com --period pm \\
-        --done "1:course at 45%" --blockers ""
+        --task "3=in_progress:course at 45%" --blockers ""
 """
 from __future__ import annotations
 
@@ -30,17 +28,17 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("LangGraph is required for the daily cycle: pip install langgraph") from exc
 
 from bench.config import require_bench_enabled
+from bench.tools.catalog import load_track
 from bench.tools.eod_report import build_eod_report, save_eod_report
-from bench.tools.load_track import load_track
-from bench.tools.state import load_bench_state, record_check_in
-from bench.tools.verify_goals import verify_daily_goals
+from bench.tools.state import load_bench_state, record_check_in, update_task_status
+from bench.tools.verify_goals import verify_progress
 
 
 class CycleState(TypedDict, total=False):
     # inputs
     employee_email: str
-    period: str                # "am" | "pm"
-    done_goals: list[dict]     # [{"goal": int, "evidence": str}]
+    period: str                 # "am" | "pm"
+    task_updates: list[dict]    # [{"task_id": int, "status": str, "evidence": str, "note": str}]
     planned: list[str]
     blockers: str
     # accumulated by nodes
@@ -60,32 +58,33 @@ def load_context(state: CycleState) -> dict[str, Any]:
 
 
 def check_in(state: CycleState) -> dict[str, Any]:
+    for update in state.get("task_updates", []):
+        update_task_status(
+            state["employee_email"], int(update["task_id"]), update["status"],
+            evidence=update.get("evidence", ""), note=update.get("note", ""))
     record_check_in(
-        state["employee_email"],
-        state["period"],
-        done_goals=state.get("done_goals", []),
-        planned=state.get("planned", []),
-        blockers=state.get("blockers", ""),
-    )
-    # re-load so verification sees the event just recorded
+        state["employee_email"], state["period"],
+        planned=state.get("planned", []), blockers=state.get("blockers", ""))
+    # re-load so verification sees what was just recorded
     return {"bench_state": load_bench_state(state["employee_email"])}
 
 
 def verify(state: CycleState) -> dict[str, Any]:
-    return {"verification": verify_daily_goals(state["bench_state"], state["track"])}
+    return {"verification": verify_progress(state["bench_state"], state["track"])}
 
 
 def _deterministic_summary(verification: dict) -> str:
-    risky = [d for d in verification["deadlines"] if d["level"] != "ok"]
+    risky = [d for d in verification["deadlines"] if d["level"] in ("overdue", "at_risk")]
     parts = [
-        f"{verification['goals_met']}/{verification['goals_total']} daily goals met "
-        f"({int(verification['completion_rate'] * 100)}%)."
+        f"{verification['tasks_done']}/{verification['tasks_total']} tasks done overall; "
+        f"today {verification['touched_today']} of "
+        f"{verification['touched_today'] + verification['pending_today']} follow-ups touched."
     ]
     if verification["blockers"]:
         parts.append(f"Blockers reported: {len(verification['blockers'])}.")
     if risky:
         parts.append("Deadlines needing attention: "
-                     + "; ".join(f"{d['description']} ({d['level']}, {d['days_left']:+d}d)" for d in risky))
+                     + "; ".join(f"{d['title']} ({d['level']}, {d['days_left']:+d}d)" for d in risky))
     return " ".join(parts)
 
 
@@ -125,7 +124,7 @@ def notify(state: CycleState) -> dict[str, Any]:
 
 
 def _route_after_verify(state: CycleState) -> str:
-    """AM run: stop after verification (goals for the day are set). PM run: full report."""
+    """AM run: stop after verification (the day is planned). PM run: full report."""
     return "summarize" if state["period"] == "pm" else END
 
 
@@ -148,12 +147,15 @@ def build_graph():
     return graph.compile()
 
 
-def _parse_done(values: list[str]) -> list[dict]:
-    done = []
+def parse_task_updates(values: list[str]) -> list[dict]:
+    """Parse repeated --task 'ID=STATUS[:evidence]' flags."""
+    updates = []
     for value in values:
-        goal, _, evidence = value.partition(":")
-        done.append({"goal": int(goal), "evidence": evidence.strip()})
-    return done
+        task_id, _, rest = value.partition("=")
+        status, _, evidence = rest.partition(":")
+        updates.append({"task_id": int(task_id), "status": status.strip(),
+                        "evidence": evidence.strip()})
+    return updates
 
 
 def main() -> None:
@@ -162,7 +164,8 @@ def main() -> None:
     parser.add_argument("--email", required=True)
     parser.add_argument("--period", required=True, choices=["am", "pm"])
     parser.add_argument("--planned", action="append", default=[])
-    parser.add_argument("--done", action="append", default=[])
+    parser.add_argument("--task", action="append", default=[],
+                        help="Task update 'ID=STATUS[:evidence]', e.g. '3=done:course 100%%'")
     parser.add_argument("--blockers", default="")
     args = parser.parse_args()
 
@@ -171,7 +174,7 @@ def main() -> None:
         "employee_email": args.email,
         "period": args.period,
         "planned": args.planned,
-        "done_goals": _parse_done(args.done),
+        "task_updates": parse_task_updates(args.task),
         "blockers": args.blockers,
     })
 
@@ -180,9 +183,9 @@ def main() -> None:
     else:
         verification = result["verification"]
         print(f"AM check-in recorded for {args.email}.")
-        print(f"Today's goals ({verification['goals_total']}):")
-        for i, goal in enumerate(result["track"].get("daily_goals", []), start=1):
-            print(f"  {i}. {goal}")
+        print(f"Tasks to follow up today ({len(verification['follow_up_today'])}):")
+        for item in verification["follow_up_today"]:
+            print(f"  #{item['task_id']} [{item['status']}] {item['title']}")
 
 
 if __name__ == "__main__":

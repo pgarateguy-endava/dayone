@@ -154,16 +154,21 @@ A second, real-world domain built on the same architecture: an assistant for peo
 responsibles). Spec: [`docs/BENCH_SPEC.md`](docs/BENCH_SPEC.md) · ADRs: [`docs/adr/`](docs/adr) ·
 AWS accesses to request: [`docs/BENCH_AWS_ACCESS_CHECKLIST.md`](docs/BENCH_AWS_ACCESS_CHECKLIST.md).
 
-Bench is behind a feature flag: set `BENCH_ENABLED=1` (env or `.env`).
+Bench is behind a feature flag: set `BENCH_ENABLED=1` (env or `.env`). The catalog
+(roles, tracks, tasks with deadlines / follow-up frequency / contacts) is relational,
+in SQLite, seeded with dummy data (ADR 0003).
 
 ```bash
+BENCH_ENABLED=1 uv run python -m bench.seed    # load dummy catalog (first time)
+
 # assign a person to bench and get the plan (deterministic, no AWS)
 BENCH_ENABLED=1 uv run python -m bench.app start --employee "Ada Lovelace" \
   --email ada@example.com --profile backend-dev --track aws-backend-track
+BENCH_ENABLED=1 uv run python -m bench.app tasks --email ada@example.com
 
 # daily cycle as a LangGraph workflow (AM and PM check-ins, EOD report)
 BENCH_ENABLED=1 uv run python -m bench.graph --email ada@example.com --period am --planned "Course module 3"
-BENCH_ENABLED=1 uv run python -m bench.graph --email ada@example.com --period pm --done "1:course at 45%"
+BENCH_ENABLED=1 uv run python -m bench.graph --email ada@example.com --period pm --task "1=in_progress:course at 45%"
 ```
 
 Engine split (ADR 0002): **Strands** for conversation (`bench/strands_agent.py`, optional,

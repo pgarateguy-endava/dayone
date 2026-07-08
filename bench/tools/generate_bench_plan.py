@@ -1,10 +1,32 @@
-"""Deterministic bench plan generator. (Generation tool — no LLM, same stance as onboarding J1)."""
+"""Deterministic bench plan generator from the relational catalog. (Generation tool — no LLM)"""
 from typing import Any
 
+from bench.tools.verify_goals import FOLLOW_UP_LABELS
 
-def _bullet(items: list[Any], indent: int = 0) -> str:
-    prefix = " " * indent + "- "
-    return "\n".join(prefix + str(item) for item in items) if items else prefix + "Pending."
+_CATEGORY_TITLES = {
+    "course": "Courses", "certification": "Certifications",
+    "profile_update": "Profile updates", "portfolio": "Portfolio projects", "admin": "Admin",
+}
+
+
+def _task_lines(task: dict[str, Any]) -> str:
+    meta = [FOLLOW_UP_LABELS.get(task["follow_up"], task["follow_up"]) + " follow-up"]
+    if task.get("due_date"):
+        meta.append(f"due `{task['due_date']}`")
+    if task.get("est_hours"):
+        meta.append(f"~{task['est_hours']:g}h")
+    if task.get("requires_approval"):
+        meta.append("requires approval")
+    lines = [f"- **{task['title']}** ({', '.join(meta)})"]
+    if task.get("description"):
+        lines.append(f"  - {task['description']}")
+    if task.get("link"):
+        lines.append(f"  - Link: {task['link']}")
+    for contact in task.get("contacts", []):
+        who = f"{contact['name']}" + (f" <{contact['email']}>" if contact["email"] else "")
+        note = f" — {contact['note']}" if contact["note"] else ""
+        lines.append(f"  - Contact: {who}{note}")
+    return "\n".join(lines)
 
 
 def generate_bench_plan(
@@ -13,27 +35,18 @@ def generate_bench_plan(
     profile: dict[str, Any],
     track: dict[str, Any],
 ) -> str:
-    """Generate a personalized bench plan as Markdown from profile + track YAML."""
-    courses = [
-        f"**{c['name']}** ({c.get('provider', 'provider pending')}, ~{c.get('est_hours', '?')}h)"
-        for c in track.get("mandatory_courses", [])
-    ]
-    certs = [
-        f"**{c['name']}** — {c.get('notes', '')}" for c in track.get("certification_options", [])
-    ]
-    deadlines = [
-        f"`{d['due']}` — {d['description']}" for d in track.get("deadlines", [])
-    ]
-    responsibles = [
-        f"{r['name']} <{r['email']}> ({r.get('role', 'responsible')})"
-        for r in track.get("responsibles", [])
-    ]
-    projects = [
-        f"**{p['name']}**: {p.get('description', '')} _(skills: {', '.join(p.get('skills', []))})_"
-        for p in track.get("portfolio_projects", [])
-    ]
-    goals = [f"{i}. {g}" for i, g in enumerate(track.get("daily_goals", []), start=1)]
-    approvals = profile.get("approvals_required", [])
+    """Generate a personalized bench plan as Markdown from the DB catalog."""
+    sections = []
+    for category, title in _CATEGORY_TITLES.items():
+        tasks = [t for t in track.get("tasks", []) if t["category"] == category]
+        if tasks:
+            sections.append(f"## {title}\n\n" + "\n".join(_task_lines(t) for t in tasks))
+
+    responsibles = "\n".join(
+        f"- {r['name']} <{r['email']}> ({r['role']})" for r in track.get("responsibles", [])
+    ) or "- Pending."
+    aws = ", ".join(profile.get("permissions", {}).get("aws", [])) or "none"
+    approvals = "\n".join(f"- {a}" for a in profile.get("approvals_required", [])) or "- None."
 
     return f"""# Bench plan - {employee_name}
 
@@ -44,45 +57,24 @@ def generate_bench_plan(
 
 ## Responsibles (receive the EOD report)
 
-{_bullet(responsibles)}
+{responsibles}
 
-## Deadlines
+{chr(10).join(sections)}
 
-{_bullet(deadlines)}
+## Follow-up
 
-## Mandatory courses
-
-{_bullet(courses)}
-
-## Certification options
-
-{_bullet(certs)}
-
-## Profile update tasks
-
-{_bullet(track.get('profile_tasks', []))}
-
-Reference documentation: {', '.join(track.get('profile_docs', [])) or 'pending'}
-
-## Portfolio project suggestions
-
-{_bullet(projects)}
-
-## Daily goals (verified at each PM check-in)
-
-{chr(10).join(goals) if goals else '- Pending.'}
-
-Check-in times: {', '.join(track.get('check_in_times', [])) or 'pending'}
+The assistant checks in twice a day (AM plan / PM completions) and verifies each task
+according to its follow-up frequency. Evidence is expected for tasks that require it
+(course %, commit URL, profile diff).
 
 ## Access during bench
 
-Access remains role-based from your profile (`profiles/{profile.get('id')}.yaml`).
+Access remains role-based from your profile (AWS: {aws}).
 This plan never grants permissions. Actions requiring human approval:
 
-{_bullet(approvals)}
+{approvals}
 
 ---
-*MVP status: data comes from local versioned YAML; progress is stored locally and the
-EOD report is written to disk. In production: DynamoDB state, Teams delivery,
-Bedrock Knowledge Base for profile documentation.*
+*Dev status: catalog and state live in SQLite (`.local-progress/bench.db`); reports are
+written to disk. In production: DynamoDB, Teams delivery, Bedrock Knowledge Base.*
 """
