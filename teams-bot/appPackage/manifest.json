@@ -1,10 +1,10 @@
 {
     "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.27/MicrosoftTeams.schema.json",
     "manifestVersion": "1.27",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "id": "${{TEAMS_APP_ID}}",
     "developer": {
-        "name": "My App, Inc.",
+        "name": "Endava MVD",
         "websiteUrl": "https://www.example.com",
         "privacyUrl": "https://www.example.com/privacy",
         "termsOfUseUrl": "https://www.example.com/termofuse"
@@ -25,41 +25,49 @@
     "supportsChannelFeatures": "tier1",
     "bots": [
         {
-        "botId": "${{BOT_ID}}",
-        "scopes": ["personal", "team", "groupChat"],
-        "isNotificationOnly": false,
-        "supportsCalling": false,
-        "supportsVideo": false,
-        "supportsFiles": false,
-        "commandLists": [
+            "botId": "${{BOT_ID}}",
+            "scopes": [
+                "personal",
+                "team",
+                "groupChat"
+            ],
+            "isNotificationOnly": false,
+            "supportsCalling": false,
+            "supportsVideo": false,
+            "supportsFiles": false,
+            "commandLists": [
                 {
-                  "scopes": ["personal", "team", "groupChat"],
-                  "commands": [
-                      {
-                          "title": "start bench",
-                          "description": "Crear o reiniciar un plan de Bench."
-                      },
-                      {
-                          "title": "plan",
-                          "description": "Ver el plan activo."
-                      },
-                      {
-                          "title": "checkin",
-                          "description": "Registrar avances, bloqueos y proximo foco."
-                      },
-                      {
-                          "title": "summary",
-                          "description": "Ver el reporte operativo."
-                      },
-                      {
-                          "title": "bedrock status",
-                          "description": "Ver estado de la integracion con Bedrock."
-                      },
-                      {
-                          "title": "help",
-                          "description": "Ver comandos disponibles."
-                      }
-                  ]
+                    "scopes": [
+                        "personal",
+                        "team",
+                        "groupChat"
+                    ],
+                    "commands": [
+                        {
+                            "title": "start bench",
+                            "description": "Crear o reiniciar un plan de Bench."
+                        },
+                        {
+                            "title": "plan",
+                            "description": "Ver el plan activo."
+                        },
+                        {
+                            "title": "checkin",
+                            "description": "Registrar avances, bloqueos y proximo foco."
+                        },
+                        {
+                            "title": "summary",
+                            "description": "Ver el reporte operativo."
+                        },
+                        {
+                            "title": "bedrock status",
+                            "description": "Ver estado de la integracion con Bedrock."
+                        },
+                        {
+                            "title": "help",
+                            "description": "Ver comandos disponibles."
+                        }
+                    ]
                 }
             ]
         }
