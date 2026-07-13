@@ -1,0 +1,15 @@
+{
+    "debug.onTaskErrors": "abort",
+    "terminal.integrated.env.osx": {
+        "PATH": "/Users/pedrogarateguy/.nvm/versions/node/v22.17.0/bin:/opt/homebrew/bin:/opt/homebrew/sbin:${env:PATH}"
+    },
+    "terminal.integrated.inheritEnv": true,
+    "json.schemas": [
+        {
+            "fileMatch": [
+                "/aad.*.json"
+            ],
+            "schema": {}
+        }
+    ]
+}

@@ -35,7 +35,10 @@ from bench.tools.state import (
 )
 from bench.tools.verify_goals import FOLLOW_UP_LABELS, verify_progress
 
+from bench.api import router as api_router
+
 app = FastAPI(title="Bench Assistant (dev UI)")
+app.include_router(api_router)  # /api/v1 — consumed by the Teams bot (ADR 0004)
 
 _CSS = """
 body { font-family: system-ui, sans-serif; margin: 0; background: #f6f5f2; color: #222; }

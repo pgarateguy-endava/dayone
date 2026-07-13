@@ -1,0 +1,64 @@
+import pytest
+
+pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient  # noqa: E402
+
+import bench.db as db_mod
+import bench.tools.eod_report as eod_report_mod
+from bench.seed import seed
+from bench.webapp import app
+
+
+@pytest.fixture()
+def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("BENCH_ENABLED", "1")
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    monkeypatch.setattr(eod_report_mod, "REPORTS_DIR", tmp_path / "reports")
+    seed()
+    return TestClient(app)
+
+
+def _onboard(client, email="ada@test.com"):
+    return client.post("/api/v1/onboard", json={
+        "employee_name": "Ada Lovelace", "employee_email": email,
+        "profile_id": "backend-dev", "track_id": "aws-backend-track"})
+
+
+def test_catalog_and_onboard(client):
+    cat = client.get("/api/v1/catalog").json()
+    assert any(p["id"] == "senior-dev" for p in cat["profiles"])
+    response = _onboard(client)
+    assert response.status_code == 200
+    assert "Bench plan - Ada Lovelace" in response.json()["reply"]
+
+
+def test_unknown_person_is_404_with_hint(client):
+    response = client.get("/api/v1/plan/nobody@test.com")
+    assert response.status_code == 404
+    assert "onboard" in response.json()["detail"]
+
+
+def test_task_update_checkin_and_report(client):
+    _onboard(client)
+    response = client.post("/api/v1/task", json={
+        "employee_email": "ada@test.com", "task_id": 1,
+        "status": "in_progress", "evidence": "curso al 40%"})
+    assert "in_progress" in response.json()["reply"]
+
+    response = client.post("/api/v1/checkin", json={
+        "employee_email": "ada@test.com", "period": "pm", "blockers": "licencia Udemy"})
+    reply = response.json()["reply"]
+    assert "EOD report - Ada Lovelace" in reply and "licencia Udemy" in reply
+
+    assert "tasks done" not in client.get("/api/v1/tasks/ada@test.com").json()["reply"]
+    assert "#1" in client.get("/api/v1/tasks/ada@test.com").json()["reply"]
+
+
+def test_chat_routes_commands_and_falls_back_without_llm(client):
+    _onboard(client)
+    assert "Bench plan" in client.post("/api/v1/chat", json={
+        "employee_email": "ada@test.com", "text": "plan"}).json()["reply"]
+    # freeform without AWS creds → deterministic status fallback
+    reply = client.post("/api/v1/chat", json={
+        "employee_email": "ada@test.com", "text": "como vengo con mis metas?"}).json()["reply"]
+    assert "tasks done" in reply

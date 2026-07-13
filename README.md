@@ -177,6 +177,14 @@ needs AWS) and **LangGraph** for the scheduled daily cycle (`bench/graph.py`, ru
 There is also an **agentic LangGraph** variant where the LLM is bound to the bench tools
 (`bench/agent_graph.py`, `ToolNode` + `bind_tools`, needs AWS: `uv sync --extra agentic`).
 
+### Teams channel (teams-bot/)
+
+`teams-bot/` is a Microsoft Teams bot (M365 Agents SDK) acting as a **thin channel** over
+this service (ADR 0004): it resolves the user's email and forwards everything to
+`/api/v1` (`bench/api.py`) — no domain logic, no state, no AWS credentials in the bot.
+Run the service (`uvicorn bench.webapp:app`), then F5 the bot from VS Code with the
+M365 Agents Toolkit (see `teams-bot/README.md`); set `BENCH_BACKEND_URL` if not localhost.
+
 ### Dev web UI (SQLite state)
 
 ```bash

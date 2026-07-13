@@ -63,6 +63,13 @@ A reviewer identity that knows which repos belong to each bench person, analyzes
 attaches feedback to the person's bench record. Explicitly out of MVP; specified so the data
 model already carries `practice_repos[]` per person.
 
+### B6 — Teams as the conversation channel (in progress)
+The `teams-bot/` app (Microsoft 365 Agents SDK) is a thin adapter: it resolves the user's
+corporate email and forwards everything to the service's `/api/v1`. Commands map to
+deterministic endpoints; freeform chat goes to the agentic graph (Bedrock) with a
+deterministic fallback. EOD reports will be delivered as proactive bot messages.
+See `docs/adr/0004-teams-bot-thin-channel.md`.
+
 ### B5 — Role-based access mapping (reuses onboarding)
 Bench people keep role-scoped accesses. This reuses `profiles/*.yaml` `permissions` +
 `approvals_required` untouched — the bench track never grants access; it only *references*
