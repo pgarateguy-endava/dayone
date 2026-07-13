@@ -1,0 +1,14 @@
+[project]
+name = "benchcoach-teams-bot"
+version = "0.1.0"
+description = "Teams bot — thin conversational channel over the Bench service (ADR 0004)"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "microsoft-teams-apps>=2.0.0a8,<3.0.0",
+  "azure-identity>=1.12.0",
+  "httpx>=0.27",
+  "python-dotenv>=1.0",
+]
+
+# Note: src/requirements.txt is kept in sync manually — the M365 Agents Toolkit's
+# Azure zipDeploy installs from it on App Service.
