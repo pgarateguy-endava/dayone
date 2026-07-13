@@ -20,10 +20,23 @@ The team wants to learn and use:
 1. Prioritize AWS-native solutions.
 2. Do not assume real integrations with Confluence, Jira, Slack or GitHub in the initial MVP.
 3. Model permissions, projects and profiles as versioned YAML.
+   **Bench-domain exception (this branch):** the Bench catalog (roles, tracks, tasks) lives
+   in SQLite with a seed migration instead of YAML, to support the backoffice ABM — see
+   `docs/adr/0003-relational-catalog-sqlite.md`. The onboarding workshop domain (`agent/`,
+   `profiles/`, `projects/`) keeps versioned YAML.
 4. Design so that a backoffice can later exist where employee + profile + project are entered.
 5. Keep the code simple for workshop purposes.
 6. Avoid automating real permissions without explicit approval.
 7. Every change must preserve the ability to run the agent locally.
+
+## Bench domain (feature/bench branch)
+
+A second domain: assistant for people on Endava's Bench (courses, certifications, daily
+goals, EOD reports). Spec: `docs/BENCH_SPEC.md`; ADRs: `docs/adr/`. Gated by
+`BENCH_ENABLED=1`. Engines: deterministic LangGraph cycle (`bench/graph.py`), agentic
+LangGraph (`bench/agent_graph.py`), Strands agent (`bench/strands_agent.py`). Dev storage
+is SQLite (`bench/db.py` + `bench/seed.py`); production swaps to DynamoDB behind the same
+functions in `bench/tools/`.
 
 ## Functional domain
 

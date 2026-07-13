@@ -56,9 +56,10 @@ Future AgentCore Runtime
 │   ├── config.py                   # Configuration
 │   ├── prompts.py                  # System prompts
 │   └── tools/                      # Simulated local tools
+├── bench/                          # Bench domain (feature/bench): DB, tools, graphs, web UI
 ├── profiles/                       # Declarative onboarding profiles
 ├── projects/                       # Declarative projects
-├── docs/                           # Objectives, context and decisions
+├── docs/                           # Objectives, context and decisions (incl. docs/adr/)
 ├── accelerator/                    # Integration with the AWS sample
 ├── scripts/                        # Setup/demo scripts
 ├── infra/backoffice/               # Placeholder for the future backoffice
