@@ -188,5 +188,9 @@ def chat(body: ChatIn):
         from bench.agent_graph import run_chat  # needs langchain-aws + AWS creds
 
         return {"reply": run_chat(body.employee_email, body.text, body.conversation_id)}
-    except (SystemExit, Exception):
+    except (SystemExit, Exception) as exc:
+        import traceback
+
+        print(f"[chat] AI unavailable, using deterministic fallback: {exc!r}")
+        traceback.print_exc()
         return {"reply": _deterministic_fallback(body)}
