@@ -16,10 +16,11 @@ agents = [
   "strands-agents",
   "bedrock-agentcore",
 ]
-# Agentic LangGraph (bench/agent_graph.py): LLM bound to tools via ToolNode/bind_tools
+# Conversational agent (bench/agent_graph.py): LLM bound to tools + chat memory
 agentic = [
   "langchain>=1.0",
   "langchain-aws>=0.2",
+  "langgraph-checkpoint-sqlite>=2.0",
 ]
 
 [dependency-groups]

@@ -159,32 +159,34 @@ def checkin(body: CheckinIn):
     return {"reply": f"AM check-in recorded. Tasks to follow up today:\n\n{goals}"}
 
 
-def _freeform_reply(state: dict, text: str) -> str:
-    """Freeform chat: agentic graph (Bedrock) if available, deterministic fallback if not."""
+def _deterministic_fallback(body: ChatIn) -> str:
+    """When Bedrock/langchain is unavailable the channel still works: a few keyword
+    shortcuts over the deterministic tools, plus the verified status."""
     try:
-        from bench.agent_graph import build_agent_graph  # needs langchain-aws + AWS creds
-
-        graph = build_agent_graph()
-        result = graph.invoke({"messages": [
-            {"role": "user", "content": f"(employee: {state['employee_email']}) {text}"}
-        ]})
-        return result["messages"][-1].content
-    except (SystemExit, Exception):
-        return (_status_reply(state)
-                + "\n\n_(AI chat unavailable — showing your verified status. "
-                  "Try `plan`, `tasks`, `checkin` or `report`.)_")
+        state = load_bench_state(body.employee_email)
+    except FileNotFoundError:
+        return ("No estás en bench todavía y el chat con IA no está disponible. "
+                "Pedile a tu People Lead que te dé de alta desde el backoffice web.")
+    text = body.text.strip().lower()
+    if text in ("plan", "my plan", "mi plan"):
+        return _plan_reply(state)
+    if text in ("tasks", "tareas", "mis tareas"):
+        return _tasks_reply(state)
+    if text in ("report", "reporte", "summary", "resumen", "eod"):
+        return _report_reply(state)
+    return (_status_reply(state)
+            + "\n\n_(Chat con IA no disponible — este es tu estado verificado. "
+              "Atajos: `plan`, `tasks`, `report`.)_")
 
 
 @router.post("/chat")
 def chat(body: ChatIn):
-    state = _state_or_404(body.employee_email)
-    text = body.text.strip().lower()
-    if text in ("plan", "my plan", "mi plan"):
-        return {"reply": _plan_reply(state)}
-    if text in ("tasks", "tareas", "mis tareas"):
-        return {"reply": _tasks_reply(state)}
-    if text in ("report", "reporte", "summary", "resumen", "eod"):
-        return {"reply": _report_reply(state)}
-    if text in ("status", "estado", "avance"):
-        return {"reply": _status_reply(state)}
-    return {"reply": _freeform_reply(state, body.text)}
+    """Conversational-first (ADR 0004): every message goes to the agent, which leads
+    using its tools (bound server-side to this employee). Deterministic fallback keeps
+    the channel alive without AWS."""
+    try:
+        from bench.agent_graph import run_chat  # needs langchain-aws + AWS creds
+
+        return {"reply": run_chat(body.employee_email, body.text, body.conversation_id)}
+    except (SystemExit, Exception):
+        return {"reply": _deterministic_fallback(body)}

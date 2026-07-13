@@ -1,24 +1,22 @@
-"""OPTIONAL — agentic LangGraph: the LLM is bound to the bench tools and decides which to call.
+"""Conversational bench agent — the LLM leads, bound to bench tools (ADR 0002/0004).
 
-This complements `bench/graph.py` (deterministic pipeline) with the OTHER LangGraph pattern,
-per the current docs (langgraph 1.x, docs.langchain.com):
+Pattern per current LangGraph docs (1.x): `model.bind_tools` + `ToolNode` +
+`tools_condition`, plus a **checkpointer** so each Teams conversation keeps memory
+(`thread_id` = conversation id).
 
-- `model.bind_tools(tools)` associates the model with the tools;
-- `ToolNode` (langgraph.prebuilt) executes whatever tool calls the model emits;
-- `tools_condition` routes: if the last AI message contains tool calls -> ToolNode, else END;
-- fully prebuilt alternative: `create_agent` from langchain 1.x (successor of the
-  deprecated `create_react_agent`).
+Safety model:
+- The employee identity is bound SERVER-SIDE: tools are created per-request closed over
+  the authenticated email. The LLM cannot act on anyone else's data.
+- Goal completion, verification and the EOD report remain deterministic tools;
+  the model records what the person reports and narrates — it never computes progress.
 
-Division of labor (ADR 0002): the AI decides *what to look at and what to say* according to
-progress; goal completion is still computed by `verify_daily_goals` (deterministic tool).
+Requirements (not needed for the deterministic paths):
 
-Requirements (not needed for the local paths):
-
-    uv sync --group ui --extra agentic     # langchain + langchain-aws
-    # AWS credentials + Bedrock model access (see docs/BENCH_AWS_ACCESS_CHECKLIST.md)
+    uv sync --extra agentic          # langchain + langchain-aws (+ sqlite checkpointer)
+    export AWS_PROFILE=... AWS_REGION=us-west-2 BEDROCK_MODEL_ID=...
 
     BENCH_ENABLED=1 uv run python -m bench.agent_graph --email ada@example.com \\
-        --ask "How am I doing today? What should I focus on next?"
+        --ask "termine el modulo 3 del curso, y estoy trabado con la licencia de udemy"
 """
 from __future__ import annotations
 
@@ -33,76 +31,158 @@ try:
     from langgraph.prebuilt import ToolNode, tools_condition
 except ImportError as exc:  # pragma: no cover
     raise SystemExit(
-        "The agentic graph needs langchain + langchain-aws: uv sync --extra agentic"
+        "The conversational agent needs langchain + langchain-aws: uv sync --extra agentic"
     ) from exc
+
+try:  # persistent conversation memory if available, in-memory otherwise
+    from langgraph.checkpoint.sqlite import SqliteSaver  # type: ignore
+    import sqlite3 as _sqlite3
+
+    from bench.config import PROGRESS_DIR
+
+    PROGRESS_DIR.mkdir(exist_ok=True)
+    _CHECKPOINTER = SqliteSaver(
+        _sqlite3.connect(PROGRESS_DIR / "chat-memory.db", check_same_thread=False))
+except Exception:  # pragma: no cover
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    _CHECKPOINTER = InMemorySaver()
 
 from bench.config import require_bench_enabled
 from bench.prompts import BENCH_SYSTEM_PROMPT
-from bench.tools.catalog import load_track as _load_track
+from bench.tools import catalog as _catalog
+from bench.tools.eod_report import build_eod_report as _build_eod_report
+from bench.tools.eod_report import save_eod_report as _save_eod_report
+from bench.tools.generate_bench_plan import generate_bench_plan as _generate_bench_plan
 from bench.tools.state import load_bench_state as _load_bench_state
+from bench.tools.state import record_check_in as _record_check_in
+from bench.tools.state import start_bench as _start_bench
+from bench.tools.state import update_task_status as _update_task_status
 from bench.tools.verify_goals import verify_progress as _verify_progress
 
+COACH_PROMPT = BENCH_SYSTEM_PROMPT + """
 
-@tool
-def get_bench_status(employee_email: str) -> dict:
-    """Get today's verified progress for a person on bench: task statuses and follow-ups
-    (decided deterministically from the database, never by the model), blockers and
-    deadline risks."""
-    state = _load_bench_state(employee_email)
-    track = _load_track(state["track_id"])
-    return _verify_progress(state, track)
+You are chatting on Teams with ONE person on bench (their identity is already resolved;
+your tools operate only on their data). Lead the conversation like a coach:
 
-
-@tool
-def get_bench_track(track_id: str) -> dict:
-    """Get the declarative bench track: mandatory courses, certification options,
-    daily goals, profile tasks and deadlines. Source of truth — do not invent items."""
-    return _load_track(track_id)
+- If they are not on bench yet, offer to set them up: show the catalog, ask for role and
+  track, then start their bench and present the plan.
+- When they tell you what they did, record it: update the matching task's status with
+  their words as evidence/note, and register a check-in (pm if they report completions,
+  am if they are planning the day). Always confirm what you recorded.
+- Ask for evidence when a task requires it. Surface blockers and deadline risks from the
+  verified status. Suggest the next most valuable task (deadlines first).
+- Answer in the person's language (Spanish or English). Be brief: this is chat.
+"""
 
 
-@tool
-def get_bench_state(employee_email: str) -> dict:
-    """Get the raw bench record for a person: profile, track and check-in history."""
-    return _load_bench_state(employee_email)
+def make_tools(employee_email: str) -> list:
+    """Build the toolset closed over the authenticated employee email."""
+
+    @tool
+    def get_my_status() -> dict:
+        """Verified progress for today: task statuses, follow-ups due, blockers and
+        deadline risks. Computed deterministically — trust it over the chat history."""
+        state = _load_bench_state(employee_email)
+        track = _catalog.load_track(state["track_id"])
+        return _verify_progress(state, track)
+
+    @tool
+    def get_my_plan() -> str:
+        """The person's full bench plan (Markdown)."""
+        state = _load_bench_state(employee_email)
+        return _generate_bench_plan(
+            state["employee_name"], employee_email,
+            _catalog.load_profile(state["profile_id"]), _catalog.load_track(state["track_id"]))
+
+    @tool
+    def get_my_tasks() -> list[dict]:
+        """The person's task instances with ids, statuses, deadlines and follow-up."""
+        return _load_bench_state(employee_email)["tasks"]
+
+    @tool
+    def update_my_task(task_id: int, status: str, evidence: str = "", note: str = "") -> dict:
+        """Record task progress the person reported. status: pending | in_progress |
+        done | blocked. Put their reported proof (course %, commit URL) in evidence."""
+        return _update_task_status(employee_email, task_id, status, evidence, note)
+
+    @tool
+    def record_my_check_in(period: str, planned: list[str] | None = None,
+                           blockers: str = "") -> dict:
+        """Register the daily check-in journal entry. period: 'am' (planning the day)
+        or 'pm' (reporting completions). Include blockers verbatim."""
+        return _record_check_in(employee_email, period, planned=planned, blockers=blockers)
+
+    @tool
+    def get_catalog() -> dict:
+        """Available roles and bench tracks (for onboarding someone not on bench yet)."""
+        return {
+            "profiles": [{"id": p["id"], "name": p["name"]} for p in _catalog.list_profiles()],
+            "tracks": [{"id": t["id"], "name": t["name"],
+                        "target_profiles": t["target_profiles"]} for t in _catalog.list_tracks()],
+        }
+
+    @tool
+    def start_my_bench(profile_id: str, track_id: str, my_name: str = "") -> str:
+        """Put the person on bench with a role and track, instantiating their tasks.
+        Confirm role and track with them before calling this."""
+        state = _start_bench(my_name or employee_email, employee_email, profile_id, track_id)
+        return f"Bench started with {len(state['tasks'])} tasks."
+
+    @tool
+    def build_my_eod_report() -> str:
+        """Generate and save today's EOD report (Markdown) for the responsibles."""
+        state = _load_bench_state(employee_email)
+        track = _catalog.load_track(state["track_id"])
+        verification = _verify_progress(state, track)
+        report = _build_eod_report(state, track, verification)
+        _save_eod_report(report, employee_email, verification["date"])
+        return report
+
+    return [get_my_status, get_my_plan, get_my_tasks, update_my_task,
+            record_my_check_in, get_catalog, start_my_bench, build_my_eod_report]
 
 
-TOOLS = [get_bench_status, get_bench_track, get_bench_state]
-
-
-def build_agent_graph():
-    """Classic agentic loop: llm_call <-> ToolNode until the model stops calling tools."""
+def build_agent_graph(employee_email: str):
+    """Agentic loop with conversation memory: llm <-> ToolNode until no tool calls."""
     model = ChatBedrockConverse(
-        model_id=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
+        region_name=os.environ.get("AWS_REGION", "us-west-2"),
     )
-    model_with_tools = model.bind_tools(TOOLS)
+    tools = make_tools(employee_email)
+    model_with_tools = model.bind_tools(tools)
 
     def llm_call(state: MessagesState):
         return {"messages": [model_with_tools.invoke(
-            [SystemMessage(content=BENCH_SYSTEM_PROMPT)] + state["messages"]
-        )]}
+            [SystemMessage(content=COACH_PROMPT)] + state["messages"])]}
 
     builder = StateGraph(MessagesState)
     builder.add_node("llm_call", llm_call)
-    builder.add_node("tools", ToolNode(TOOLS))
+    builder.add_node("tools", ToolNode(tools))
     builder.add_edge(START, "llm_call")
-    builder.add_conditional_edges("llm_call", tools_condition)  # tool_calls -> "tools", else END
+    builder.add_conditional_edges("llm_call", tools_condition)
     builder.add_edge("tools", "llm_call")
-    return builder.compile()
+    return builder.compile(checkpointer=_CHECKPOINTER)
+
+
+def run_chat(employee_email: str, text: str, thread_id: str | None = None) -> str:
+    """One conversational turn with memory. thread_id = Teams conversation id."""
+    graph = build_agent_graph(employee_email)
+    result = graph.invoke(
+        {"messages": [{"role": "user", "content": text}]},
+        config={"configurable": {"thread_id": thread_id or f"cli:{employee_email}"}},
+    )
+    return result["messages"][-1].content
 
 
 def main() -> None:
     require_bench_enabled()
     parser = argparse.ArgumentParser(prog="bench.agent_graph")
     parser.add_argument("--email", required=True)
-    parser.add_argument("--ask", required=True, help="Question for the bench assistant")
+    parser.add_argument("--ask", required=True)
+    parser.add_argument("--thread", default=None)
     args = parser.parse_args()
-
-    graph = build_agent_graph()
-    result = graph.invoke({"messages": [
-        {"role": "user", "content": f"(employee: {args.email}) {args.ask}"}
-    ]})
-    print(result["messages"][-1].content)
+    print(run_chat(args.email, args.ask, args.thread))
 
 
 if __name__ == "__main__":

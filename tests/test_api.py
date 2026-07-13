@@ -54,11 +54,19 @@ def test_task_update_checkin_and_report(client):
     assert "#1" in client.get("/api/v1/tasks/ada@test.com").json()["reply"]
 
 
-def test_chat_routes_commands_and_falls_back_without_llm(client):
+def test_chat_falls_back_deterministically_without_llm(client):
+    # In this test env langchain isn't installed, so /chat exercises the fallback:
+    # keyword shortcuts + verified status. The channel never dies.
     _onboard(client)
     assert "Bench plan" in client.post("/api/v1/chat", json={
         "employee_email": "ada@test.com", "text": "plan"}).json()["reply"]
-    # freeform without AWS creds → deterministic status fallback
     reply = client.post("/api/v1/chat", json={
         "employee_email": "ada@test.com", "text": "como vengo con mis metas?"}).json()["reply"]
     assert "tasks done" in reply
+
+
+def test_chat_unknown_person_gets_onboarding_hint_not_404(client):
+    reply = client.post("/api/v1/chat", json={
+        "employee_email": "new@test.com", "text": "hola"})
+    assert reply.status_code == 200
+    assert "alta" in reply.json()["reply"]
