@@ -8,6 +8,8 @@ dependencies = [
   "pydantic>=2.8.0",
   # Bench domain daily cycle (local-only, no AWS required) — see docs/adr/0002
   "langgraph>=0.2",
+  # Loads repo-root .env (flags + AWS/Bedrock config) in bench/config.py
+  "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

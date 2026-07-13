@@ -2,6 +2,13 @@ import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+try:  # load repo-root .env (AWS/Bedrock + flags); existing env vars take precedence
+    from dotenv import load_dotenv
+
+    load_dotenv(REPO_ROOT / ".env")
+except ImportError:  # pragma: no cover — dotenv optional, exports still work
+    pass
 TRACKS_DIR = REPO_ROOT / "tracks"
 PROGRESS_DIR = REPO_ROOT / ".local-progress"
 REPORTS_DIR = PROGRESS_DIR / "reports"
