@@ -79,26 +79,38 @@ your tools operate only on their data). Lead the conversation like a coach:
 def make_tools(employee_email: str) -> list:
     """Build the toolset closed over the authenticated employee email."""
 
+    NOT_ON_BENCH = ("This person is NOT on bench yet. Offer to set them up: show the "
+                    "catalog (get_catalog), agree on role and track, then start_my_bench.")
+
     @tool
-    def get_my_status() -> dict:
+    def get_my_status() -> dict | str:
         """Verified progress for today: task statuses, follow-ups due, blockers and
         deadline risks. Computed deterministically — trust it over the chat history."""
-        state = _load_bench_state(employee_email)
+        try:
+            state = _load_bench_state(employee_email)
+        except FileNotFoundError:
+            return NOT_ON_BENCH
         track = _catalog.load_track(state["track_id"])
         return _verify_progress(state, track)
 
     @tool
     def get_my_plan() -> str:
         """The person's full bench plan (Markdown)."""
-        state = _load_bench_state(employee_email)
+        try:
+            state = _load_bench_state(employee_email)
+        except FileNotFoundError:
+            return NOT_ON_BENCH
         return _generate_bench_plan(
             state["employee_name"], employee_email,
             _catalog.load_profile(state["profile_id"]), _catalog.load_track(state["track_id"]))
 
     @tool
-    def get_my_tasks() -> list[dict]:
+    def get_my_tasks() -> list[dict] | str:
         """The person's task instances with ids, statuses, deadlines and follow-up."""
-        return _load_bench_state(employee_email)["tasks"]
+        try:
+            return _load_bench_state(employee_email)["tasks"]
+        except FileNotFoundError:
+            return NOT_ON_BENCH
 
     @tool
     def update_my_task(task_id: int, status: str, evidence: str = "", note: str = "") -> dict:
@@ -132,7 +144,10 @@ def make_tools(employee_email: str) -> list:
     @tool
     def build_my_eod_report() -> str:
         """Generate and save today's EOD report (Markdown) for the responsibles."""
-        state = _load_bench_state(employee_email)
+        try:
+            state = _load_bench_state(employee_email)
+        except FileNotFoundError:
+            return NOT_ON_BENCH
         track = _catalog.load_track(state["track_id"])
         verification = _verify_progress(state, track)
         report = _build_eod_report(state, track, verification)
@@ -158,7 +173,9 @@ def build_agent_graph(employee_email: str):
 
     builder = StateGraph(MessagesState)
     builder.add_node("llm_call", llm_call)
-    builder.add_node("tools", ToolNode(tools))
+    # handle_tool_errors: a failing tool becomes an error ToolMessage instead of
+    # aborting mid-checkpoint (which would leave a dangling tool_use in the thread).
+    builder.add_node("tools", ToolNode(tools, handle_tool_errors=True))
     builder.add_edge(START, "llm_call")
     builder.add_conditional_edges("llm_call", tools_condition)
     builder.add_edge("tools", "llm_call")
@@ -166,12 +183,25 @@ def build_agent_graph(employee_email: str):
 
 
 def run_chat(employee_email: str, text: str, thread_id: str | None = None) -> str:
-    """One conversational turn with memory. thread_id = Teams conversation id."""
+    """One conversational turn with memory. thread_id = Teams conversation id.
+
+    Self-repair: if a previous crash left a dangling `tool_use` in the thread
+    (Bedrock ValidationException), the thread history is discarded and the turn
+    retried fresh — losing chat memory beats a permanently broken conversation.
+    """
     graph = build_agent_graph(employee_email)
-    result = graph.invoke(
-        {"messages": [{"role": "user", "content": text}]},
-        config={"configurable": {"thread_id": thread_id or f"cli:{employee_email}"}},
-    )
+    thread = thread_id or f"cli:{employee_email}"
+    payload = {"messages": [{"role": "user", "content": text}]}
+    try:
+        result = graph.invoke(payload, config={"configurable": {"thread_id": thread}})
+    except Exception as exc:
+        if "tool_use" not in str(exc):
+            raise
+        try:
+            _CHECKPOINTER.delete_thread(thread)
+        except Exception:
+            thread = f"{thread}:repaired"
+        result = graph.invoke(payload, config={"configurable": {"thread_id": thread}})
     return result["messages"][-1].content
 
 
