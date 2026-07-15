@@ -28,6 +28,23 @@ def add_knowledge(kind: str, title: str, provider: str = "", url: str = "",
         return cursor.lastrowid
 
 
+def get_knowledge(item_id: int) -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM knowledge WHERE id = ?", (item_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"Knowledge item {item_id} not found")
+        return dict(row)
+
+
+def update_knowledge(item_id: int, *, title: str, provider: str = "", url: str = "",
+                     register_url: str = "", tags: str = "", notes: str = "") -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE knowledge SET title = ?, provider = ?, url = ?, register_url = ?, "
+            "tags = ?, notes = ? WHERE id = ?",
+            (title, provider, url, register_url, tags, notes, item_id))
+
+
 def delete_knowledge(item_id: int) -> None:
     with connect() as conn:
         conn.execute("DELETE FROM knowledge WHERE id = ?", (item_id,))

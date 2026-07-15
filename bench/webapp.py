@@ -659,6 +659,40 @@ def responsible_delete(responsible_id: int):
 
 # ---------- AI Knowledge base (info the AI uses for suggestions) ----------
 
+def _knowledge_row(item: dict) -> str:
+    links = []
+    if item["url"]:
+        links.append('<a href="' + item["url"] + '">course</a>')
+    if item["register_url"]:
+        links.append('<a href="' + item["register_url"] + '">register completion</a>')
+    return (
+        f"<tr id='k-{item['id']}'><td><b>{item['title']}</b>"
+        f"<br><small>{item['notes']}</small></td>"
+        f"<td>{item['provider']}</td><td>{' · '.join(links) or '—'}</td>"
+        f"<td><small>{item['tags'] or 'all'}</small></td>"
+        f"<td style='white-space:nowrap'>"
+        f"<button hx-get='/knowledge/{item['id']}/edit' hx-target='#k-{item['id']}' "
+        f"hx-swap='outerHTML'>Edit</button> "
+        f"<button class='danger' hx-post='/knowledge/{item['id']}/delete' "
+        f"hx-target='#k-{item['id']}' hx-swap='outerHTML' hx-confirm='Delete?'>"
+        f"Delete</button></td></tr>")
+
+
+def _knowledge_edit_row(item: dict) -> str:
+    return f"""<tr id="k-{item['id']}" class="editing"><td colspan="5">
+<form hx-post="/knowledge/{item['id']}" hx-target="#k-{item['id']}" hx-swap="outerHTML">
+<input name="title" value="{item['title']}" placeholder="Title" required style="width:40%">
+<input name="provider" value="{item['provider']}" placeholder="Provider" style="width:20%">
+<input name="tags" value="{item['tags']}" placeholder="Tags (aws,ai...)" style="width:20%"><br>
+<input name="url" value="{item['url']}" placeholder="Course URL" style="width:40%">
+<input name="register_url" value="{item['register_url']}" placeholder="Register-completion URL" style="width:40%"><br>
+<input name="notes" value="{item['notes']}" placeholder="Notes" style="width:70%">
+<button>Save</button>
+<button type="button" class="ghost" hx-get="/knowledge/{item['id']}/row"
+ hx-target="#k-{item['id']}" hx-swap="outerHTML">Cancel</button>
+</form></td></tr>"""
+
+
 @app.get("/knowledge", response_class=HTMLResponse)
 def knowledge_page():
     from bench.tools.knowledge import list_knowledge
@@ -668,24 +702,10 @@ def knowledge_page():
              "course": "Suggested courses"}
     sections = []
     for kind, title in kinds.items():
-        rows = []
-        for item in list_knowledge(kind):
-            links = []
-            if item["url"]:
-                links.append('<a href="' + item["url"] + '">course</a>')
-            if item["register_url"]:
-                links.append('<a href="' + item["register_url"] + '">register completion</a>')
-            rows.append(
-                f"<tr id='k-{item['id']}'><td><b>{item['title']}</b>"
-                f"<br><small>{item['notes']}</small></td>"
-                f"<td>{item['provider']}</td><td>{' · '.join(links) or '—'}</td>"
-                f"<td><small>{item['tags'] or 'all'}</small></td>"
-                f"<td><button class='danger' hx-post='/knowledge/{item['id']}/delete' "
-                f"hx-target='#k-{item['id']}' hx-swap='outerHTML' hx-confirm='Delete?'>"
-                f"Delete</button></td></tr>")
+        rows = "".join(_knowledge_row(item) for item in list_knowledge(kind))
         sections.append(f"<div class='card'><h2>{title}</h2>"
                         f"<table><tr><th>Item</th><th>Provider</th><th>Links</th><th>Tags</th><th></th></tr>"
-                        f"{''.join(rows)}</table></div>")
+                        f"{rows}</table></div>")
     kind_options = "".join(f"<option value='{k}'>{k}</option>" for k in kinds)
     add_form = f"""<form class="block" method="post" action="/knowledge">
 <label>Type</label><select name="kind">{kind_options}</select>
@@ -712,6 +732,32 @@ def knowledge_add(kind: str = Form(...), title: str = Form(...), provider: str =
     add_knowledge(kind, title.strip(), provider.strip(), url.strip(),
                   register_url.strip(), tags.strip(), notes.strip())
     return RedirectResponse("/knowledge", status_code=303)
+
+
+@app.get("/knowledge/{item_id}/row", response_class=HTMLResponse)
+def knowledge_row(item_id: int):
+    from bench.tools.knowledge import get_knowledge
+
+    return HTMLResponse(_knowledge_row(get_knowledge(item_id)))
+
+
+@app.get("/knowledge/{item_id}/edit", response_class=HTMLResponse)
+def knowledge_edit(item_id: int):
+    from bench.tools.knowledge import get_knowledge
+
+    return HTMLResponse(_knowledge_edit_row(get_knowledge(item_id)))
+
+
+@app.post("/knowledge/{item_id}", response_class=HTMLResponse)
+def knowledge_save(item_id: int, title: str = Form(...), provider: str = Form(""),
+                   url: str = Form(""), register_url: str = Form(""),
+                   tags: str = Form(""), notes: str = Form("")):
+    from bench.tools.knowledge import get_knowledge, update_knowledge
+
+    update_knowledge(item_id, title=title.strip(), provider=provider.strip(),
+                     url=url.strip(), register_url=register_url.strip(),
+                     tags=tags.strip(), notes=notes.strip())
+    return HTMLResponse(_knowledge_row(get_knowledge(item_id)))
 
 
 @app.post("/knowledge/{item_id}/delete", response_class=HTMLResponse)

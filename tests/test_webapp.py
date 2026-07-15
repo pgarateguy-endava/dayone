@@ -106,6 +106,18 @@ def test_tracks_abm_task_inline_edit_and_delete(client):
     assert "AWS CP Essentials (v2)" not in client.get("/tracks/aws-backend-track").text
 
 
+def test_knowledge_abm_edit_inline(client):
+    page = client.get("/knowledge").text
+    assert "Claude Partner Network Learning Path" in page
+    assert 'name="title"' in client.get("/knowledge/1/edit").text
+    saved = client.post("/knowledge/1", data={
+        "title": "Claude Partner Path (v2)", "provider": "Anthropic",
+        "url": "https://anthropic.skilljar.com/x", "register_url": "", "tags": "", "notes": "",
+    }).text
+    assert "Claude Partner Path (v2)" in saved
+    assert client.post("/knowledge/1/delete").text == ""
+
+
 def test_delete_role_in_use_is_refused(client):
     client.post("/onboard", data={
         "employee": "Ada", "email": "ada@test.com",
