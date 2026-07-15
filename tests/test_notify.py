@@ -30,12 +30,12 @@ def test_suggestions_match_profile_tags(seeded):
 
 def test_proactive_rules_pre_bench_kickoff_and_progress(seeded):
     today = date.today()
-    # pre_bench starting in 5 days -> greeting
+    # future date -> computed pre_bench -> greeting
     start_bench("Ana", "ana@test.com", "backend-dev", "aws-backend-track",
-                status="pre_bench", bench_start_date=(today + timedelta(days=5)).isoformat())
-    # active since 10 days ago -> kickoff first, then weekly progress check
+                bench_start_date=(today + timedelta(days=5)).isoformat())
+    # date 10 days ago -> computed active -> kickoff first, then weekly progress check
     start_bench("Beto", "beto@test.com", "backend-dev", "aws-backend-track",
-                status="active", bench_start_date=(today - timedelta(days=10)).isoformat(),
+                bench_start_date=(today - timedelta(days=10)).isoformat(),
                 profile_text="worked with aws lambda")
     assert generate_due_notifications() == 2
     save_conversation_ref("ana@test.com", "conv-ana")
@@ -54,3 +54,25 @@ def test_proactive_rules_pre_bench_kickoff_and_progress(seeded):
     mark_delivered(beto_id)
     assert generate_due_notifications() == 1
     assert pending_notifications()[-1]["kind"] == "progress_check"
+
+
+def test_changing_the_date_recomputes_status_and_refires(seeded):
+    from bench.tools.state import computed_status, load_bench_state, set_bench_start_date
+
+    today = date.today()
+    start_bench("Caro", "caro@test.com", "backend-dev", "aws-backend-track")
+    assert load_bench_state("caro@test.com")["status"] == "inactive"  # no date
+    assert generate_due_notifications() == 0  # inactive -> bot silent
+
+    # demo step 1: date in a few days -> pre_bench -> greeting fires
+    set_bench_start_date("caro@test.com", (today + timedelta(days=3)).isoformat())
+    assert load_bench_state("caro@test.com")["status"] == "pre_bench"
+    assert generate_due_notifications() == 1
+    assert pending_notifications()[-1]["kind"] == "pre_bench_greeting"
+
+    # demo step 2: date a week ago -> active -> history cleared, kickoff fires
+    set_bench_start_date("caro@test.com", (today - timedelta(days=7)).isoformat())
+    assert load_bench_state("caro@test.com")["status"] == "active"
+    assert generate_due_notifications() == 1
+    assert pending_notifications()[-1]["kind"] == "kickoff"
+    assert computed_status(None) == "inactive"

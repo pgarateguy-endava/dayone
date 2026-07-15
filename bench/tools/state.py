@@ -12,14 +12,24 @@ from typing import Any
 from bench.db import TASK_STATUSES, connect
 
 
+def computed_status(bench_start_date: str | None, on_date: str | None = None) -> str:
+    """Status is COMPUTED from the bench start date (single source of truth):
+    no date -> inactive · future date -> pre_bench · today/past -> active."""
+    if not bench_start_date:
+        return "inactive"
+    today = date.fromisoformat(on_date) if on_date else date.today()
+    return "pre_bench" if date.fromisoformat(bench_start_date) > today else "active"
+
+
 def start_bench(employee_name: str, employee_email: str, profile_id: str, track_id: str,
-                status: str = "active", bench_start_date: str | None = None,
+                bench_start_date: str | None = None,
                 profile_text: str = "", profile_filename: str = "") -> dict:
     """Create (or reset) the bench record and instantiate the track's tasks. (Write tool)
 
-    status: 'pre_bench' (activation scheduled for bench_start_date), 'active', 'inactive'.
+    The activation status is computed from bench_start_date — see computed_status().
     profile_text: extracted Endava Profile content — the AI's context about the person.
     """
+    status = computed_status(bench_start_date)
     with connect() as conn:
         conn.execute("DELETE FROM check_ins WHERE email = ?", (employee_email,))
         conn.execute("DELETE FROM person_tasks WHERE email = ?", (employee_email,))
@@ -63,7 +73,7 @@ def load_bench_state(employee_email: str) -> dict[str, Any]:
         "profile_id": person["profile_id"],
         "track_id": person["track_id"],
         "started_at": person["started_at"],
-        "status": person["status"],
+        "status": computed_status(person["bench_start_date"]),
         "bench_start_date": person["bench_start_date"],
         "profile_text": person["profile_text"],
         "profile_filename": person["profile_filename"],
@@ -126,15 +136,13 @@ def record_check_in(employee_email: str, period: str, planned: list[str] | None 
     return event
 
 
-def set_bench_status(employee_email: str, status: str,
-                     bench_start_date: str | None = None) -> None:
-    """Flip the activation trigger: active / inactive / pre_bench (+ start date). (Write)"""
-    if status not in ("active", "inactive", "pre_bench"):
-        raise ValueError("status must be active | inactive | pre_bench")
+def set_bench_start_date(employee_email: str, bench_start_date: str | None) -> None:
+    """THE activation trigger: changing the date recomputes the status and clears the
+    person's notification history so the proactive rules re-fire. (Write)"""
     with connect() as conn:
-        conn.execute(
-            "UPDATE people SET status = ?, bench_start_date = COALESCE(?, bench_start_date) "
-            "WHERE email = ?", (status, bench_start_date, employee_email))
+        conn.execute("UPDATE people SET bench_start_date = ?, status = ? WHERE email = ?",
+                     (bench_start_date, computed_status(bench_start_date), employee_email))
+        conn.execute("DELETE FROM notifications WHERE email = ?", (employee_email,))
 
 
 def list_bench_people() -> list[dict[str, Any]]:

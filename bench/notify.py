@@ -86,10 +86,13 @@ def generate_due_notifications(today: str | None = None) -> int:
     """Evaluate the rules for everyone and queue what's due. Returns queued count."""
     today_d = date.fromisoformat(today) if today else date.today()
     queued = 0
+    from bench.tools.state import computed_status
+
     with connect() as conn:
         for person in list_bench_people():
-            email, status = person["email"], person["status"]
+            email = person["email"]
             start = person["bench_start_date"]
+            status = computed_status(start, today_d.isoformat())
             start_d = date.fromisoformat(start) if start else None
             if status == "pre_bench" and start_d and 0 < (start_d - today_d).days <= 7:
                 if not _already_sent(conn, email, "pre_bench_greeting"):

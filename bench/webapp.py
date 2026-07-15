@@ -167,17 +167,16 @@ def dashboard():
         verification = verify_progress(state, track)
         blockers = f'<span class="badge bad">{len(verification["blockers"])} blocker(s)</span>' \
             if verification["blockers"] else ""
-        status = person["status"]
+        from bench.tools.state import computed_status
+
+        status = computed_status(person["bench_start_date"])
         status_cls = {"active": "ok", "pre_bench": "info", "inactive": "warn"}.get(status, "warn")
         start = person["bench_start_date"] or "—"
         profile_doc = "📄" if person["profile_text"] else ""
         status_form = (
-            f'<form method="post" action="/person/{person["email"]}/status" style="white-space:nowrap">'
-            f'<select name="status">'
-            + "".join(f'<option value="{s}" {"selected" if s == status else ""}>{s}</option>'
-                      for s in ("active", "pre_bench", "inactive"))
-            + f'</select> <input type="date" name="bench_start_date" value="{person["bench_start_date"] or ""}">'
-              f' <button>Set</button></form>')
+            f'<form method="post" action="/person/{person["email"]}/date" style="white-space:nowrap">'
+            f'<input type="date" name="bench_start_date" value="{person["bench_start_date"] or ""}">'
+            f' <button>Set date</button></form>')
         rows.append(
             f'<tr><td><a href="/person/{person["email"]}">{person["name"]}</a> {profile_doc}'
             f'<br><small>{person["email"]}</small></td>'
@@ -203,11 +202,14 @@ def dashboard():
     return _page("Bench dashboard", f'<div class="card">{table}</div>{log}')
 
 
-@app.post("/person/{email}/status")
-def person_status(email: str, status: str = Form(...), bench_start_date: str = Form("")):
-    from bench.tools.state import set_bench_status
+@app.post("/person/{email}/date")
+def person_date(email: str, bench_start_date: str = Form("")):
+    """Changing the date IS the trigger: history cleared, rules re-evaluated NOW."""
+    from bench.notify import generate_due_notifications
+    from bench.tools.state import set_bench_start_date
 
-    set_bench_status(email, status, bench_start_date or None)
+    set_bench_start_date(email, bench_start_date or None)
+    generate_due_notifications()  # immediate — the bot delivers within its next poll (~20s)
     return RedirectResponse("/", status_code=303)
 
 
@@ -225,14 +227,9 @@ def onboard_form():
 <label>Email</label><input name="email" type="email" required>
 <label>Role (context for the AI — defines access boundaries)</label><select name="profile">{options_p}</select>
 <label>Track (bench plan — tasks, deadlines, follow-up)</label><select name="track">{options_t}</select>
-<div class="cols"><div>
-<label>Status (activation trigger for the bot)</label>
-<select name="status"><option value="active">active — on bench now</option>
-<option value="pre_bench">pre_bench — starts on the date below</option>
-<option value="inactive">inactive</option></select>
-</div><div>
-<label>Bench start date</label><input name="bench_start_date" type="date">
-</div></div>
+<label>Bench start date — THE activation trigger (empty = inactive; future = pre-bench
+heads-up; today/past = active, kickoff message)</label>
+<input name="bench_start_date" type="date">
 <label>Endava Profile (PDF — gives the AI the person's background for suggestions)</label>
 <input name="profile_pdf" type="file" accept="application/pdf">
 <button>Create bench plan</button></form></div>""")
@@ -250,7 +247,6 @@ async def onboard(request: Request):
         profile_filename = upload.filename
     email = str(form["email"]).strip()
     start_bench(str(form["employee"]).strip(), email, str(form["profile"]), str(form["track"]),
-                status=str(form.get("status", "active")),
                 bench_start_date=str(form.get("bench_start_date") or "") or None,
                 profile_text=profile_text, profile_filename=profile_filename)
     return RedirectResponse(f"/person/{email}", status_code=303)
