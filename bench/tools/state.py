@@ -12,16 +12,24 @@ from typing import Any
 from bench.db import TASK_STATUSES, connect
 
 
-def start_bench(employee_name: str, employee_email: str, profile_id: str, track_id: str) -> dict:
-    """Create (or reset) the bench record and instantiate the track's tasks. (Write tool)"""
+def start_bench(employee_name: str, employee_email: str, profile_id: str, track_id: str,
+                status: str = "active", bench_start_date: str | None = None,
+                profile_text: str = "", profile_filename: str = "") -> dict:
+    """Create (or reset) the bench record and instantiate the track's tasks. (Write tool)
+
+    status: 'pre_bench' (activation scheduled for bench_start_date), 'active', 'inactive'.
+    profile_text: extracted Endava Profile content — the AI's context about the person.
+    """
     with connect() as conn:
         conn.execute("DELETE FROM check_ins WHERE email = ?", (employee_email,))
         conn.execute("DELETE FROM person_tasks WHERE email = ?", (employee_email,))
         conn.execute(
-            "INSERT OR REPLACE INTO people (email, name, profile_id, track_id, started_at) "
-            "VALUES (?, ?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO people (email, name, profile_id, track_id, started_at, "
+            "status, bench_start_date, profile_text, profile_filename) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (employee_email, employee_name, profile_id, track_id,
-             datetime.now(timezone.utc).isoformat()))
+             datetime.now(timezone.utc).isoformat(),
+             status, bench_start_date, profile_text, profile_filename))
         conn.executemany(
             "INSERT INTO person_tasks (email, task_id) VALUES (?, ?)",
             [(employee_email, r["id"]) for r in conn.execute(
@@ -55,6 +63,10 @@ def load_bench_state(employee_email: str) -> dict[str, Any]:
         "profile_id": person["profile_id"],
         "track_id": person["track_id"],
         "started_at": person["started_at"],
+        "status": person["status"],
+        "bench_start_date": person["bench_start_date"],
+        "profile_text": person["profile_text"],
+        "profile_filename": person["profile_filename"],
         "tasks": tasks,
         "check_ins": check_ins,
     }
@@ -112,6 +124,17 @@ def record_check_in(employee_email: str, period: str, planned: list[str] | None 
              json.dumps(event["planned"], ensure_ascii=False),
              event["blockers"], event["note"], event["at"]))
     return event
+
+
+def set_bench_status(employee_email: str, status: str,
+                     bench_start_date: str | None = None) -> None:
+    """Flip the activation trigger: active / inactive / pre_bench (+ start date). (Write)"""
+    if status not in ("active", "inactive", "pre_bench"):
+        raise ValueError("status must be active | inactive | pre_bench")
+    with connect() as conn:
+        conn.execute(
+            "UPDATE people SET status = ?, bench_start_date = COALESCE(?, bench_start_date) "
+            "WHERE email = ?", (status, bench_start_date, employee_email))
 
 
 def list_bench_people() -> list[dict[str, Any]]:

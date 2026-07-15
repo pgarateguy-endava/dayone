@@ -10,6 +10,8 @@ dependencies = [
   "langgraph>=0.2",
   # Loads repo-root .env (flags + AWS/Bedrock config) in bench/config.py
   "python-dotenv>=1.0",
+  # Endava Profile PDF text extraction
+  "pypdf>=4.0",
 ]
 
 [project.optional-dependencies]

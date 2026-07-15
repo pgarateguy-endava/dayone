@@ -109,7 +109,38 @@ CREATE TABLE IF NOT EXISTS check_ins (
     note TEXT NOT NULL DEFAULT '',
     at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS knowledge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL CHECK (kind IN ('mandatory_course','certification','course')),
+    title TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    register_url TEXT NOT NULL DEFAULT '',   -- where completion must be registered
+    tags TEXT NOT NULL DEFAULT '',           -- csv, matched against profile text (aws,azure,ai...)
+    notes TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS conversation_refs (
+    email TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notifications (       -- daily proactive-contact log
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT NOT NULL,
+    kind TEXT NOT NULL,                          -- pre_bench_greeting | kickoff | progress_check
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    delivered_at TEXT
+);
 """
+
+# columns added after the first release — applied idempotently on connect
+_MIGRATIONS = [
+    "ALTER TABLE people ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
+    "ALTER TABLE people ADD COLUMN bench_start_date TEXT",
+    "ALTER TABLE people ADD COLUMN profile_text TEXT NOT NULL DEFAULT ''",
+    "ALTER TABLE people ADD COLUMN profile_filename TEXT NOT NULL DEFAULT ''",
+]
 
 
 def connect() -> sqlite3.Connection:
@@ -123,4 +154,9 @@ def connect() -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(_SCHEMA)
+    for migration in _MIGRATIONS:
+        try:
+            conn.execute(migration)
+        except sqlite3.OperationalError:  # column already exists
+            pass
     return conn

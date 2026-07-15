@@ -116,12 +116,37 @@ TASKS = [
 ]
 
 
+# (kind, title, provider, url, register_url, tags, notes)
+KNOWLEDGE = [
+    ("mandatory_course", "Claude Partner Network Learning Path", "Anthropic Skilljar",
+     "https://anthropic.skilljar.com/page/claude-partner-network-learning-path",
+     "https://endavauniversity.edcast.com/insights/claude-partner-network-learning-path",
+     "", "Mandatory for everyone on bench. After finishing, register completion in Endava University."),
+    ("certification", "AWS Certified Cloud Practitioner", "AWS", "https://aws.amazon.com/certification/certified-cloud-practitioner/", "", "aws", "Entry level."),
+    ("certification", "AWS Certified AI Practitioner", "AWS", "https://aws.amazon.com/certification/certified-ai-practitioner/", "", "aws,ai", "Entry level, AI focus."),
+    ("certification", "AWS Certified Solutions Architect - Associate", "AWS", "https://aws.amazon.com/certification/certified-solutions-architect-associate/", "", "aws", "Most requested by clients."),
+    ("certification", "AWS Certified Developer - Associate", "AWS", "https://aws.amazon.com/certification/certified-developer-associate/", "", "aws,backend", "Code-focused."),
+    ("certification", "AWS Certified Data Engineer - Associate", "AWS", "https://aws.amazon.com/certification/certified-data-engineer-associate/", "", "aws,data", ""),
+    ("certification", "AWS Certified Solutions Architect - Professional", "AWS", "https://aws.amazon.com/certification/certified-solutions-architect-professional/", "", "aws,senior", "For seniors with an Associate cert."),
+    ("certification", "AWS Certified DevOps Engineer - Professional", "AWS", "https://aws.amazon.com/certification/certified-devops-engineer-professional/", "", "aws,devops,senior", ""),
+    ("certification", "Microsoft Azure Fundamentals (AZ-900)", "Microsoft", "https://learn.microsoft.com/credentials/certifications/azure-fundamentals/", "", "azure", "Entry level."),
+    ("certification", "Azure Developer Associate (AZ-204)", "Microsoft", "https://learn.microsoft.com/credentials/certifications/azure-developer/", "", "azure,backend", ""),
+    ("course", "AWS Certified AI Practitioner - Complete Course", "Udemy",
+     "https://www.udemy.com/course/aws-ai-practitioner-certified/", "", "aws,ai", "Popular prep course."),
+]
+
+
 def seed() -> dict:
     """Wipe and reload catalog tables. Returns row counts."""
     with connect() as conn:
         for table in ("task_contacts", "tasks", "responsibles", "track_profiles",
-                      "tracks", "profile_approvals", "profile_permissions", "profiles"):
+                      "tracks", "profile_approvals", "profile_permissions", "profiles",
+                      "knowledge"):
             conn.execute(f"DELETE FROM {table}")
+
+        conn.executemany(
+            "INSERT INTO knowledge (kind, title, provider, url, register_url, tags, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)", KNOWLEDGE)
 
         conn.executemany("INSERT INTO profiles (id, name, summary) VALUES (?, ?, ?)", PROFILES)
         for profile_id, perms in PROFILE_PERMISSIONS.items():

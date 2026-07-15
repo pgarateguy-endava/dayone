@@ -96,6 +96,35 @@ def _status_reply(state: dict) -> str:
     return "\n".join(lines)
 
 
+class ConversationRefIn(BaseModel):
+    email: str
+    conversation_id: str
+
+
+@router.post("/conversation_ref")
+def register_conversation_ref(body: ConversationRefIn):
+    """The bot registers where each person talks, enabling proactive messages."""
+    from bench.notify import save_conversation_ref
+
+    save_conversation_ref(body.email, body.conversation_id)
+    return {"ok": True}
+
+
+@router.get("/notifications/pending")
+def get_pending_notifications():
+    from bench.notify import pending_notifications
+
+    return {"notifications": pending_notifications()}
+
+
+@router.post("/notifications/{notification_id}/delivered")
+def notification_delivered(notification_id: int):
+    from bench.notify import mark_delivered
+
+    mark_delivered(notification_id)
+    return {"ok": True}
+
+
 @router.get("/catalog")
 def get_catalog():
     return {

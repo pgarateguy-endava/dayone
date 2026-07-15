@@ -40,30 +40,65 @@ from bench.api import router as api_router
 app = FastAPI(title="Bench Assistant (dev UI)")
 app.include_router(api_router)  # /api/v1 — consumed by the Teams bot (ADR 0004)
 
+
+@app.on_event("startup")
+async def _proactive_scheduler():
+    """Every 60s: evaluate proactive rules (pre-bench greeting, kickoff, weekly
+    progress check) and queue notifications; the bot polls and delivers them."""
+    import asyncio
+
+    from bench.notify import generate_due_notifications
+
+    async def loop():
+        while True:
+            try:
+                if bench_enabled():
+                    queued = generate_due_notifications()
+                    if queued:
+                        print(f"[notify] queued {queued} proactive notification(s)")
+            except Exception as exc:
+                print(f"[notify] scheduler error: {exc!r}")
+            await asyncio.sleep(60)
+
+    asyncio.get_event_loop().create_task(loop())
+
 _CSS = """
-body { font-family: system-ui, sans-serif; margin: 0; background: #f6f5f2; color: #222; }
-nav { background: #1f2937; color: #fff; padding: 10px 24px; display: flex; gap: 18px; }
-nav a { color: #e5e7eb; text-decoration: none; font-weight: 600; }
-main { max-width: 1150px; margin: 24px auto; padding: 0 16px; }
-.card { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 18px 22px; margin-bottom: 18px; }
+:root { --ink:#1b1b25; --paper:#f7f6f3; --card:#fff; --line:#e8e6e1; --accent:#ff4a1c; --accent-dark:#d63a12; --muted:#75717a; }
+* { box-sizing: border-box; }
+body { font-family: -apple-system, 'Segoe UI', Inter, system-ui, sans-serif; margin: 0; background: var(--paper); color: var(--ink); font-size: 15px; }
+nav { background: var(--ink); color: #fff; padding: 14px 32px; display: flex; gap: 26px; align-items: center; position: sticky; top: 0; z-index: 5; }
+nav::before { content: 'Bench Assistant'; font-weight: 800; color: var(--accent); margin-right: 14px; letter-spacing: .3px; }
+nav a { color: #cfccd6; text-decoration: none; font-weight: 600; font-size: 14px; padding: 4px 2px; border-bottom: 2px solid transparent; }
+nav a:hover { color: #fff; border-bottom-color: var(--accent); }
+main { max-width: 1150px; margin: 30px auto; padding: 0 20px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px 26px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(27,27,37,.05); }
 table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
-.badge { padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-.ok { background: #dcfce7; color: #166534; } .warn { background: #fef9c3; color: #854d0e; }
-.bad { background: #fee2e2; color: #991b1b; } .info { background: #e0e7ff; color: #3730a3; }
-input, select, textarea { padding: 6px; margin: 2px 0; border: 1px solid #ccc; border-radius: 6px; box-sizing: border-box; font: inherit; }
-form.block input, form.block select, form.block textarea { width: 100%; margin-bottom: 10px; }
-button { background: #1f2937; color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; font-weight: 600; cursor: pointer; }
-button.danger { background: #b91c1c; } button.ghost { background: #6b7280; }
-h1 { font-size: 22px; } h2 { font-size: 17px; }
-.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-a { color: #1d4ed8; } small { color: #6b7280; }
-tr.editing td { background: #f8fafc; }
-dialog { border: 1px solid #ddd; border-radius: 12px; padding: 22px 26px; min-width: 480px; max-width: 640px; }
-dialog::backdrop { background: rgba(15, 23, 42, .45); }
+th { text-align: left; padding: 10px; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); border-bottom: 2px solid var(--line); }
+td { text-align: left; padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+tr:hover td { background: #fbfaf8; }
+.badge { padding: 3px 11px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.ok { background: #e5f6ec; color: #14683a; } .warn { background: #fdf3d7; color: #8a6116; }
+.bad { background: #fde8e4; color: #a52a12; } .info { background: #e9e7fd; color: #4438a8; }
+input, select, textarea { padding: 8px 10px; margin: 2px 0; border: 1px solid #d7d4cd; border-radius: 8px; font: inherit; background: #fff; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 0; border-color: var(--accent); }
+form.block input, form.block select, form.block textarea { width: 100%; margin-bottom: 12px; }
+label { font-weight: 600; font-size: 13px; color: var(--muted); }
+button { background: var(--ink); color: #fff; border: 0; border-radius: 8px; padding: 8px 18px; font-weight: 700; cursor: pointer; font-size: 14px; }
+button:hover { background: #000; }
+button.danger { background: #fff; color: var(--accent-dark); border: 1px solid var(--accent-dark); }
+button.danger:hover { background: var(--accent-dark); color: #fff; }
+button.ghost { background: #fff; color: var(--muted); border: 1px solid var(--line); }
+button.add { background: var(--accent); border-radius: 999px; font-size: 14px; }
+button.add:hover { background: var(--accent-dark); }
+h1 { font-size: 26px; font-weight: 800; letter-spacing: -.3px; } h2 { font-size: 16px; font-weight: 700; }
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+a { color: var(--accent-dark); text-decoration: none; font-weight: 600; } a:hover { text-decoration: underline; }
+small { color: var(--muted); }
+tr.editing td { background: #fff7f4; }
+dialog { border: 1px solid var(--line); border-radius: 16px; padding: 26px 30px; min-width: 480px; max-width: 660px; box-shadow: 0 18px 50px rgba(27,27,37,.25); }
+dialog::backdrop { background: rgba(27,27,37,.5); }
 dialog h2 { margin-top: 0; }
-.card-head { display: flex; justify-content: space-between; align-items: center; }
-button.add { border-radius: 999px; font-size: 15px; }
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
 """
 
 
@@ -82,7 +117,7 @@ def _page(title: str, body: str) -> HTMLResponse:
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>{_CSS}</style></head><body>
 <nav><a href="/">Dashboard</a><a href="/onboard">Onboard to bench</a>
-<a href="/roles">Roles</a><a href="/tracks">Tracks</a></nav>
+<a href="/roles">Roles</a><a href="/tracks">Tracks</a><a href="/knowledge">AI Knowledge</a></nav>
 <main><h1>{title}</h1>{body}</main></body></html>""")
 
 
@@ -132,17 +167,48 @@ def dashboard():
         verification = verify_progress(state, track)
         blockers = f'<span class="badge bad">{len(verification["blockers"])} blocker(s)</span>' \
             if verification["blockers"] else ""
+        status = person["status"]
+        status_cls = {"active": "ok", "pre_bench": "info", "inactive": "warn"}.get(status, "warn")
+        start = person["bench_start_date"] or "—"
+        profile_doc = "📄" if person["profile_text"] else ""
+        status_form = (
+            f'<form method="post" action="/person/{person["email"]}/status" style="white-space:nowrap">'
+            f'<select name="status">'
+            + "".join(f'<option value="{s}" {"selected" if s == status else ""}>{s}</option>'
+                      for s in ("active", "pre_bench", "inactive"))
+            + f'</select> <input type="date" name="bench_start_date" value="{person["bench_start_date"] or ""}">'
+              f' <button>Set</button></form>')
         rows.append(
-            f'<tr><td><a href="/person/{person["email"]}">{person["name"]}</a></td>'
-            f'<td>{person["profile_id"]}</td><td>{person["track_id"]}</td>'
+            f'<tr><td><a href="/person/{person["email"]}">{person["name"]}</a> {profile_doc}'
+            f'<br><small>{person["email"]}</small></td>'
+            f'<td>{person["profile_id"]}<br><small>{person["track_id"]}</small></td>'
+            f'<td><span class="badge {status_cls}">{status}</span><br><small>starts {start}</small></td>'
             f'<td>{_progress_badge(verification)} {blockers}</td>'
             f'<td>{_deadline_badge(verification)}</td>'
             f'<td>AM {"✓" if verification["checked_in_am"] else "—"} / '
-            f'PM {"✓" if verification["checked_in_pm"] else "—"}</td></tr>')
-    table = ("<table><tr><th>Person</th><th>Profile</th><th>Track</th><th>Progress</th>"
-             "<th>Deadlines</th><th>Check-ins</th></tr>" + "".join(rows) + "</table>") \
+            f'PM {"✓" if verification["checked_in_pm"] else "—"}</td>'
+            f'<td>{status_form}</td></tr>')
+    table = ("<table><tr><th>Person</th><th>Role / Track</th><th>Status</th><th>Progress</th>"
+             "<th>Deadlines</th><th>Check-ins</th><th>Activation</th></tr>"
+             + "".join(rows) + "</table>") \
         if rows else "<p>Nobody on bench yet. <a href='/onboard'>Onboard someone</a>.</p>"
-    return _page("Bench dashboard", f'<div class="card">{table}</div>')
+    log_rows = "".join(
+        f"<tr><td>{n['created_at'][:16]}</td><td>{n['email']}</td>"
+        f"<td><span class='badge info'>{n['kind']}</span></td>"
+        f"<td>{'delivered' if n['delivered_at'] else 'pending'}</td></tr>"
+        for n in __import__('bench.notify', fromlist=['notification_log']).notification_log()[:15])
+    log = (f'<div class="card"><h2>Proactive contact log</h2>'
+           f'<table><tr><th>When</th><th>Person</th><th>Kind</th><th>Delivery</th></tr>{log_rows}</table></div>'
+           if log_rows else "")
+    return _page("Bench dashboard", f'<div class="card">{table}</div>{log}')
+
+
+@app.post("/person/{email}/status")
+def person_status(email: str, status: str = Form(...), bench_start_date: str = Form("")):
+    from bench.tools.state import set_bench_status
+
+    set_bench_status(email, status, bench_start_date or None)
+    return RedirectResponse("/", status_code=303)
 
 
 # ---------- Onboard ----------
@@ -153,18 +219,40 @@ def onboard_form():
                         for p in catalog.list_profiles())
     options_t = "".join(f'<option value="{t["id"]}">{t["name"]}</option>'
                         for t in catalog.list_tracks())
-    return _page("Onboard to bench", f"""<div class="card"><form class="block" method="post" action="/onboard">
+    return _page("Onboard to bench", f"""<div class="card">
+<form class="block" method="post" action="/onboard" enctype="multipart/form-data">
 <label>Name</label><input name="employee" required>
 <label>Email</label><input name="email" type="email" required>
 <label>Role (context for the AI — defines access boundaries)</label><select name="profile">{options_p}</select>
 <label>Track (bench plan — tasks, deadlines, follow-up)</label><select name="track">{options_t}</select>
+<div class="cols"><div>
+<label>Status (activation trigger for the bot)</label>
+<select name="status"><option value="active">active — on bench now</option>
+<option value="pre_bench">pre_bench — starts on the date below</option>
+<option value="inactive">inactive</option></select>
+</div><div>
+<label>Bench start date</label><input name="bench_start_date" type="date">
+</div></div>
+<label>Endava Profile (PDF — gives the AI the person's background for suggestions)</label>
+<input name="profile_pdf" type="file" accept="application/pdf">
 <button>Create bench plan</button></form></div>""")
 
 
 @app.post("/onboard")
-def onboard(employee: str = Form(...), email: str = Form(...),
-            profile: str = Form(...), track: str = Form(...)):
-    start_bench(employee, email, profile, track)
+async def onboard(request: Request):
+    form = await request.form()
+    profile_text, profile_filename = "", ""
+    upload = form.get("profile_pdf")
+    if upload is not None and getattr(upload, "filename", ""):
+        from bench.tools.profile_pdf import extract_pdf_text
+
+        profile_text = extract_pdf_text(await upload.read())
+        profile_filename = upload.filename
+    email = str(form["email"]).strip()
+    start_bench(str(form["employee"]).strip(), email, str(form["profile"]), str(form["track"]),
+                status=str(form.get("status", "active")),
+                bench_start_date=str(form.get("bench_start_date") or "") or None,
+                profile_text=profile_text, profile_filename=profile_filename)
     return RedirectResponse(f"/person/{email}", status_code=303)
 
 
@@ -566,6 +654,71 @@ def track_add_responsible(track_id: str, name: str = Form(...), email: str = For
 @app.post("/responsibles/{responsible_id}/delete", response_class=HTMLResponse)
 def responsible_delete(responsible_id: int):
     catalog.delete_responsible(responsible_id)
+    return HTMLResponse("")
+
+
+# ---------- AI Knowledge base (info the AI uses for suggestions) ----------
+
+@app.get("/knowledge", response_class=HTMLResponse)
+def knowledge_page():
+    from bench.tools.knowledge import list_knowledge
+
+    kinds = {"mandatory_course": "Mandatory courses (everyone, must complete)",
+             "certification": "Certifications (matched to profile tags)",
+             "course": "Suggested courses"}
+    sections = []
+    for kind, title in kinds.items():
+        rows = []
+        for item in list_knowledge(kind):
+            links = []
+            if item["url"]:
+                links.append('<a href="' + item["url"] + '">course</a>')
+            if item["register_url"]:
+                links.append('<a href="' + item["register_url"] + '">register completion</a>')
+            rows.append(
+                f"<tr id='k-{item['id']}'><td><b>{item['title']}</b>"
+                f"<br><small>{item['notes']}</small></td>"
+                f"<td>{item['provider']}</td><td>{' · '.join(links) or '—'}</td>"
+                f"<td><small>{item['tags'] or 'all'}</small></td>"
+                f"<td><button class='danger' hx-post='/knowledge/{item['id']}/delete' "
+                f"hx-target='#k-{item['id']}' hx-swap='outerHTML' hx-confirm='Delete?'>"
+                f"Delete</button></td></tr>")
+        sections.append(f"<div class='card'><h2>{title}</h2>"
+                        f"<table><tr><th>Item</th><th>Provider</th><th>Links</th><th>Tags</th><th></th></tr>"
+                        f"{''.join(rows)}</table></div>")
+    kind_options = "".join(f"<option value='{k}'>{k}</option>" for k in kinds)
+    add_form = f"""<form class="block" method="post" action="/knowledge">
+<label>Type</label><select name="kind">{kind_options}</select>
+<label>Title</label><input name="title" required>
+<label>Provider</label><input name="provider">
+<label>Course URL</label><input name="url">
+<label>Where to register completion (URL)</label><input name="register_url">
+<label>Tags (csv, matched against the profile: aws,azure,ai,backend...)</label><input name="tags">
+<label>Notes</label><input name="notes">
+<button>Add</button></form>"""
+    head = (f'<div class="card"><div class="card-head">'
+            f'<p><small>This grid feeds the AI: mandatory courses apply to everyone; '
+            f'certifications and courses are suggested when their tags match the person\'s '
+            f'Endava Profile.</small></p>{_modal("new-k", "Add knowledge", "Add knowledge", add_form)}</div></div>')
+    return _page("AI Knowledge", head + "".join(sections))
+
+
+@app.post("/knowledge")
+def knowledge_add(kind: str = Form(...), title: str = Form(...), provider: str = Form(""),
+                  url: str = Form(""), register_url: str = Form(""), tags: str = Form(""),
+                  notes: str = Form("")):
+    from bench.tools.knowledge import add_knowledge
+
+    add_knowledge(kind, title.strip(), provider.strip(), url.strip(),
+                  register_url.strip(), tags.strip(), notes.strip())
+    return RedirectResponse("/knowledge", status_code=303)
+
+
+@app.post("/knowledge/{item_id}/delete", response_class=HTMLResponse)
+def knowledge_delete(item_id: int):
+    from bench.tools.knowledge import delete_knowledge
+
+    delete_knowledge(item_id)
     return HTMLResponse("")
 
 

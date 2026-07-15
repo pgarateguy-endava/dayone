@@ -71,6 +71,14 @@ async def handle_message(ctx: ActivityContext[MessageActivity]):
                            "Decime quién sos: `email tu.nombre@endava.com`")
         return
 
+    # Register the conversation reference so the service can message proactively.
+    try:
+        async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=10) as client:
+            await client.post("/api/v1/conversation_ref", json={
+                "email": email, "conversation_id": ctx.activity.conversation.id})
+    except httpx.HTTPError:
+        pass
+
     try:
         async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=90) as client:
             response = await client.post("/api/v1/chat", json={
@@ -85,5 +93,38 @@ async def handle_message(ctx: ActivityContext[MessageActivity]):
                        f"¿está corriendo en `{config.BACKEND_URL}`?")
 
 
+async def proactive_loop():
+    """Poll the service for queued proactive notifications and deliver them in Teams."""
+    from microsoft_teams.api import MessageActivityInput
+
+    while True:
+        await asyncio.sleep(20)
+        try:
+            async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=30) as client:
+                response = await client.get("/api/v1/notifications/pending")
+                for notification in response.json().get("notifications", []):
+                    if not notification.get("conversation_id"):
+                        continue  # person never talked to the bot yet — retry later
+                    try:
+                        await app.api.conversations.activities(
+                            notification["conversation_id"]
+                        ).create(MessageActivityInput(text=notification["message"]))
+                        await client.post(
+                            f"/api/v1/notifications/{notification['id']}/delivered")
+                        print(f"[proactive] sent '{notification['kind']}' to {notification['email']}")
+                    except Exception as exc:
+                        print(f"[proactive] send failed for {notification['email']}: {exc!r}")
+        except httpx.HTTPError:
+            pass  # service down — retry next cycle
+
+
+async def main():
+    task = asyncio.create_task(proactive_loop())
+    try:
+        await app.start()
+    finally:
+        task.cancel()
+
+
 if __name__ == "__main__":
-    asyncio.run(app.start())
+    asyncio.run(main())

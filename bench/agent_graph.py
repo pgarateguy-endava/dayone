@@ -142,6 +142,29 @@ def make_tools(employee_email: str) -> list:
         return f"Bench started with {len(state['tasks'])} tasks."
 
     @tool
+    def get_my_profile() -> str:
+        """The person's Endava Profile content (extracted from their PDF): background,
+        skills, experience. Use it to personalize study and certification advice."""
+        try:
+            state = _load_bench_state(employee_email)
+        except FileNotFoundError:
+            return NOT_ON_BENCH
+        return state.get("profile_text") or "No profile document uploaded yet."
+
+    @tool
+    def get_study_suggestions() -> dict | str:
+        """Mandatory courses (must be completed, with the URL where completion must be
+        registered), plus certifications and courses matched to the person's profile
+        (e.g. AWS background -> AWS certs). Deterministic — do not invent additions."""
+        from bench.tools.knowledge import suggest_for_profile
+
+        try:
+            state = _load_bench_state(employee_email)
+        except FileNotFoundError:
+            return NOT_ON_BENCH
+        return suggest_for_profile(state.get("profile_text", ""))
+
+    @tool
     def build_my_eod_report() -> str:
         """Generate and save today's EOD report (Markdown) for the responsibles."""
         try:
@@ -154,8 +177,9 @@ def make_tools(employee_email: str) -> list:
         _save_eod_report(report, employee_email, verification["date"])
         return report
 
-    return [get_my_status, get_my_plan, get_my_tasks, update_my_task,
-            record_my_check_in, get_catalog, start_my_bench, build_my_eod_report]
+    return [get_my_status, get_my_plan, get_my_tasks, update_my_task, record_my_check_in,
+            get_catalog, start_my_bench, get_my_profile, get_study_suggestions,
+            build_my_eod_report]
 
 
 def build_agent_graph(employee_email: str):
