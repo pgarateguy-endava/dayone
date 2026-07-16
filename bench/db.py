@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS conversation_refs (
 CREATE TABLE IF NOT EXISTS notifications (       -- daily proactive-contact log
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT NOT NULL,
-    kind TEXT NOT NULL,                          -- pre_bench_greeting | kickoff | progress_check
+    kind TEXT NOT NULL,                          -- pre_bench_greeting | planning_prompt | kickoff | progress_check
     message TEXT NOT NULL,
     created_at TEXT NOT NULL,
     delivered_at TEXT

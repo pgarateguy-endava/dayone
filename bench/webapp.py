@@ -2,10 +2,11 @@
 
 Views:
 - /            responsibles dashboard (everyone on bench, progress, blockers, deadline risk)
+- /review      employee review tree (select a person, inspect task progress/evidence)
 - /onboard     assign a person to bench (employee + profile + track)
 - /person/...  person cycle: task board with status/evidence, AM/PM check-in, EOD report
 - /roles       ABM of roles (inline edit/delete) — context the AI uses for access boundaries
-- /tracks      ABM of tracks; /tracks/{id} = task ABM with inline edit/delete + responsibles
+- /tracks      internal track ABM; hidden from main nav for the demo
 
 Run:
     BENCH_ENABLED=1 uv run --group ui uvicorn bench.webapp:app --reload
@@ -13,6 +14,7 @@ Run:
 from __future__ import annotations
 
 import json
+from collections import defaultdict
 
 try:
     from fastapi import FastAPI, Form, Request
@@ -39,6 +41,14 @@ from bench.api import router as api_router
 
 app = FastAPI(title="Bench Assistant (dev UI)")
 app.include_router(api_router)  # /api/v1 — consumed by the Teams bot (ADR 0004)
+
+CATEGORY_LABELS = {
+    "course": "Courses",
+    "certification": "Certifications",
+    "profile_update": "Endava Profile",
+    "portfolio": "Workshop - LABS",
+    "admin": "Admin",
+}
 
 
 @app.on_event("startup")
@@ -99,6 +109,20 @@ dialog { border: 1px solid var(--line); border-radius: 16px; padding: 26px 30px;
 dialog::backdrop { background: rgba(27,27,37,.5); }
 dialog h2 { margin-top: 0; }
 .card-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+.review-select { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+.review-select select { min-width: 320px; }
+.summary-grid { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 12px; }
+.metric { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; background: #fbfaf8; }
+.metric b { display: block; font-size: 20px; margin-bottom: 4px; }
+.tree { list-style: none; padding: 0; margin: 0; }
+.tree details { border-top: 1px solid var(--line); padding: 12px 0; }
+.tree details:first-child { border-top: 0; }
+.tree summary { cursor: pointer; font-weight: 800; display: flex; align-items: center; gap: 10px; }
+.tree ul { list-style: none; padding-left: 20px; margin: 10px 0 0; border-left: 2px solid var(--line); }
+.tree li { padding: 10px 0 10px 14px; }
+.tree .task-title { font-weight: 750; }
+.task-meta { display: flex; flex-wrap: wrap; gap: 8px 14px; margin-top: 4px; color: var(--muted); font-size: 13px; }
+.evidence { margin-top: 5px; color: var(--ink); font-size: 13px; }
 """
 
 
@@ -116,8 +140,8 @@ def _page(title: str, body: str) -> HTMLResponse:
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>{_CSS}</style></head><body>
-<nav><a href="/">Dashboard</a><a href="/onboard">Onboard to bench</a>
-<a href="/roles">Roles</a><a href="/tracks">Tracks</a><a href="/knowledge">AI Knowledge</a></nav>
+<nav><a href="/">Dashboard</a><a href="/review">Review</a><a href="/onboard">Onboard to bench</a>
+<a href="/roles">Roles</a><a href="/knowledge">AI Knowledge</a></nav>
 <main><h1>{title}</h1>{body}</main></body></html>""")
 
 
@@ -200,6 +224,86 @@ def dashboard():
            f'<table><tr><th>When</th><th>Person</th><th>Kind</th><th>Delivery</th></tr>{log_rows}</table></div>'
            if log_rows else "")
     return _page("Bench dashboard", f'<div class="card">{table}</div>{log}')
+
+
+def _task_review_item(task: dict) -> str:
+    due = f'<span>due {task["due_date"]}</span>' if task["due_date"] else ""
+    evidence = (f'<div class="evidence"><b>Evidence:</b> {task["evidence"]}</div>'
+                if task["evidence"] else '<div class="evidence"><small>No evidence yet.</small></div>')
+    note = (f'<div class="evidence"><b>Note:</b> {task["progress_note"]}</div>'
+            if task["progress_note"] else "")
+    updated = f'<span>updated {task["updated_at"][:10]}</span>' if task["updated_at"] else ""
+    completed = f'<span>completed {task["completed_at"][:10]}</span>' if task["completed_at"] else ""
+    return f"""<li>
+<div><span class="task-title">{task['title']}</span> {_status_badge(task['status'])}</div>
+<div class="task-meta"><span>follow-up {FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up'])}</span>
+{due}{updated}{completed}</div>
+{evidence}{note}
+</li>"""
+
+
+def _review_tree(tasks: list[dict]) -> str:
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    for task in tasks:
+        grouped[task["category"]].append(task)
+    sections = []
+    for category in TASK_CATEGORIES:
+        items = grouped.get(category, [])
+        if not items:
+            continue
+        done = sum(1 for task in items if task["status"] == "done")
+        rows = "".join(_task_review_item(task) for task in items)
+        sections.append(
+            f"""<details open><summary>{CATEGORY_LABELS.get(category, category)} <span class="badge info">{done}/{len(items)} done</span></summary>
+<ul>{rows}</ul></details>""")
+    return f'<ul class="tree">{"".join(sections)}</ul>' if sections else "<p>No tasks assigned.</p>"
+
+
+@app.get("/review", response_class=HTMLResponse)
+def review_by_employee(email: str = ""):
+    people = list_bench_people()
+    if not people:
+        return _page("Review by employee",
+                     "<div class='card'><p>Nobody on bench yet. "
+                     "<a href='/onboard'>Onboard someone</a>.</p></div>")
+    by_email = {p["email"].lower(): p for p in people}
+    selected = by_email.get(email.lower(), people[0] if not email else None)
+    if selected is None:
+        selected = people[0]
+    selected_email = selected["email"]
+    state = load_bench_state(selected_email)
+    track = catalog.load_track(state["track_id"])
+    verification = verify_progress(state, track)
+    from bench.tools.state import computed_status
+
+    options = "".join(
+        f'<option value="{person["email"]}" {"selected" if person["email"] == selected_email else ""}>'
+        f'{person["name"]} - {person["email"]}</option>'
+        for person in people)
+    selector = f"""<div class="card"><form class="review-select" method="get" action="/review">
+<label>Employee<br><select name="email" onchange="this.form.submit()">{options}</select></label>
+<button>Review</button>
+<a href="/person/{selected_email}">Open editable board</a>
+</form></div>"""
+    status = computed_status(state["bench_start_date"])
+    blockers = len(verification["blockers"])
+    header = f"""<div class="card">
+<div class="card-head"><h2>{state['employee_name']}</h2><span class="badge info">{status}</span></div>
+<p><small>{selected_email} · {state['profile_id']} · {state['track_id']} · starts {state['bench_start_date'] or 'not set'}</small></p>
+<div class="summary-grid">
+<div class="metric"><b>{verification['tasks_done']}/{verification['tasks_total']}</b><small>tasks done</small></div>
+<div class="metric"><b>{verification['touched_today']}/{verification['touched_today'] + verification['pending_today']}</b><small>touched today</small></div>
+<div class="metric"><b>{blockers}</b><small>blockers</small></div>
+<div class="metric"><b>{sum(1 for d in verification['deadlines'] if d['level'] in ('overdue', 'at_risk'))}</b><small>deadline risks</small></div>
+</div></div>"""
+    blockers_card = ""
+    if verification["blockers"]:
+        blockers_card = ("<div class='card'><h2>Blockers</h2><ul>"
+                         + "".join(f"<li>{blocker}</li>" for blocker in verification["blockers"])
+                         + "</ul></div>")
+    return _page("Review by employee",
+                 selector + header + f"<div class='card'><h2>Task tree</h2>{_review_tree(state['tasks'])}</div>"
+                 + blockers_card)
 
 
 @app.post("/person/{email}/date")

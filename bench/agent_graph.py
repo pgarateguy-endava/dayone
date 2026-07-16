@@ -55,6 +55,8 @@ from bench.tools.eod_report import build_eod_report as _build_eod_report
 from bench.tools.eod_report import save_eod_report as _save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan as _generate_bench_plan
 from bench.tools.state import load_bench_state as _load_bench_state
+from bench.tools.state import mark_profile_update_done as _mark_profile_update_done
+from bench.tools.state import mark_task_done_by_title as _mark_task_done_by_title
 from bench.tools.state import record_check_in as _record_check_in
 from bench.tools.state import start_bench as _start_bench
 from bench.tools.state import update_task_status as _update_task_status
@@ -70,6 +72,15 @@ your tools operate only on their data). Lead the conversation like a coach:
 - When they tell you what they did, record it: update the matching task's status with
   their words as evidence/note, and register a check-in (pm if they report completions,
   am if they are planning the day). Always confirm what you recorded.
+- Pre-bench journey: if they say they finished/prepared/updated their Endava Profile,
+  call mark_my_profile_update_done and answer warmly that it is recorded; say you will
+  write again in a few days to plan a successful bench.
+- If they accept planning their bench, start with the Mandatory courses first, then use
+  get_study_suggestions to discuss certifications or courses that fit their Endava Profile.
+- If they say they completed a named Mandatory, course, certification or workshop lab,
+  call mark_my_task_done_by_title with the title they mentioned. Do this before saying
+  the task is not assigned. If they only say "the mandatory" without naming it, ask
+  which mandatory they completed.
 - Ask for evidence when a task requires it. Surface blockers and deadline risks from the
   verified status. Suggest the next most valuable task (deadlines first).
 - Answer in the person's language (Spanish or English). Be brief: this is chat.
@@ -117,6 +128,18 @@ def make_tools(employee_email: str) -> list:
         """Record task progress the person reported. status: pending | in_progress |
         done | blocked. Put their reported proof (course %, commit URL) in evidence."""
         return _update_task_status(employee_email, task_id, status, evidence, note)
+
+    @tool
+    def mark_my_profile_update_done(evidence: str = "") -> dict:
+        """Use when the person says their Endava Profile is ready, prepared, updated,
+        finished or complete. Do not ask for a task id."""
+        return _mark_profile_update_done(employee_email, evidence=evidence)
+
+    @tool
+    def mark_my_task_done_by_title(title: str, evidence: str = "") -> dict:
+        """Use when the person says they completed a named task, mandatory course,
+        certification or workshop lab. Pass the title they mentioned; do not ask for a task id."""
+        return _mark_task_done_by_title(employee_email, title, evidence=evidence)
 
     @tool
     def record_my_check_in(period: str, planned: list[str] | None = None,
@@ -177,7 +200,8 @@ def make_tools(employee_email: str) -> list:
         _save_eod_report(report, employee_email, verification["date"])
         return report
 
-    return [get_my_status, get_my_plan, get_my_tasks, update_my_task, record_my_check_in,
+    return [get_my_status, get_my_plan, get_my_tasks, update_my_task,
+            mark_my_profile_update_done, mark_my_task_done_by_title, record_my_check_in,
             get_catalog, start_my_bench, get_my_profile, get_study_suggestions,
             build_my_eod_report]
 

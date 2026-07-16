@@ -42,10 +42,11 @@ code .                        # F5 -> "Debug in Teams (Edge)"
 
 ## Demo flow
 
-1. Web → *Onboard to bench*: person + Endava Profile PDF + status `pre_bench` + start date.
+1. Web → *Onboard to bench*: person + Endava Profile PDF + `pre_bench` start date.
 2. Message the bot once in Teams (registers the conversation reference).
-3. ~1 min later the bot proactively sends the pre-bench greeting.
-4. Dashboard → set status `active` → kickoff arrives (mandatory courses + suggestions
-   matched to the profile + "what's your plan?").
-5. Chat your plan/progress — the agent records tasks and check-ins.
-6. Dashboard shows verified progress and the proactive contact log; `report` builds the EOD.
+3. ~1 min later the bot proactively suggests updating the Endava Profile first.
+4. Reply that the Profile is ready; the agent marks the profile-update task as done.
+5. One day before bench, the bot asks whether to start planning the bench period.
+6. Planning starts with Mandatory courses, then certifications/courses matched to the Profile.
+7. Dashboard → set status `active` → kickoff arrives; chat your plan/progress.
+8. Dashboard shows verified progress and the proactive contact log; `report` builds the EOD.

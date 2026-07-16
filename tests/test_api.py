@@ -41,7 +41,7 @@ def test_unknown_person_is_404_with_hint(client):
 def test_task_update_checkin_and_report(client):
     _onboard(client)
     response = client.post("/api/v1/task", json={
-        "employee_email": "ada@test.com", "task_id": 1,
+        "employee_email": "ada@test.com", "task_id": 2,
         "status": "in_progress", "evidence": "curso al 40%"})
     assert "in_progress" in response.json()["reply"]
 
@@ -51,7 +51,7 @@ def test_task_update_checkin_and_report(client):
     assert "EOD report - Ada Lovelace" in reply and "licencia Udemy" in reply
 
     assert "tasks done" not in client.get("/api/v1/tasks/ada@test.com").json()["reply"]
-    assert "#1" in client.get("/api/v1/tasks/ada@test.com").json()["reply"]
+    assert "#2" in client.get("/api/v1/tasks/ada@test.com").json()["reply"]
 
 
 def test_chat_falls_back_deterministically_without_llm(client):
@@ -63,6 +63,45 @@ def test_chat_falls_back_deterministically_without_llm(client):
     reply = client.post("/api/v1/chat", json={
         "employee_email": "ada@test.com", "text": "como vengo con mis metas?"}).json()["reply"]
     assert "tasks done" in reply
+
+
+def test_chat_fallback_marks_profile_update_done(client):
+    _onboard(client)
+
+    reply = client.post("/api/v1/chat", json={
+        "employee_email": "Ada@Test.com",
+        "text": "Hoy termine de preparar el profile",
+    }).json()["reply"]
+
+    assert "lo dejo registrado" in reply
+    assert "planificar un bench exitoso" in reply
+    tasks = client.get("/api/v1/tasks/ada@test.com").json()["reply"]
+    assert "[done] Update Endava profile" in tasks
+
+
+def test_chat_fallback_marks_named_mandatory_done(client):
+    _onboard(client)
+
+    reply = client.post("/api/v1/chat", json={
+        "employee_email": "ada@test.com",
+        "text": "hice Claude Partner Network Learning Path",
+    }).json()["reply"]
+
+    assert "Claude Partner Network Learning Path" in reply
+    tasks = client.get("/api/v1/tasks/ada@test.com").json()["reply"]
+    assert "[done] Claude Partner Network Learning Path" in tasks
+
+
+def test_chat_fallback_planning_acceptance_starts_with_mandatory(client):
+    _onboard(client)
+
+    reply = client.post("/api/v1/chat", json={
+        "employee_email": "ada@test.com",
+        "text": "quiero planificar mi bench",
+    }).json()["reply"]
+
+    assert "Mandatory primero" in reply
+    assert "Claude Partner Network" in reply
 
 
 def test_chat_unknown_person_gets_onboarding_hint_not_404(client):

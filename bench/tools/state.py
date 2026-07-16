@@ -12,6 +12,29 @@ from typing import Any
 from bench.db import TASK_STATUSES, connect
 
 
+def _text_key(text: str) -> str:
+    return (
+        text.strip().lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ü", "u")
+    )
+
+
+def _title_matches(title: str, query: str) -> bool:
+    title_key = _text_key(title)
+    query_key = _text_key(query)
+    if not title_key or not query_key:
+        return False
+    if title_key in query_key or query_key in title_key:
+        return True
+    tokens = [token for token in query_key.replace("-", " ").split() if len(token) > 2]
+    return len(tokens) >= 3 and all(token in title_key for token in tokens)
+
+
 def computed_status(bench_start_date: str | None, on_date: str | None = None) -> str:
     """Status is COMPUTED from the bench start date (single source of truth):
     no date -> inactive · future date -> pre_bench · today/past -> active."""
@@ -106,6 +129,109 @@ def update_task_status(employee_email: str, task_id: int, status: str,
             raise KeyError(f"Task {task_id} is not assigned to {employee_email}")
     return {"task_id": task_id, "status": status, "evidence": evidence,
             "note": note, "updated_at": now}
+
+
+def mark_profile_update_done(employee_email: str, evidence: str = "", note: str = "") -> dict:
+    """Mark this person's Endava Profile update task as done. (Write tool)
+
+    The agent should not guess task ids for this common pre-bench intent; this helper
+    deterministically finds the person's `profile_update` task instance.
+    """
+    with connect() as conn:
+        task = conn.execute(
+            """SELECT pt.task_id, t.title
+               FROM person_tasks pt JOIN tasks t ON t.id = pt.task_id
+               WHERE pt.email = ? AND t.category = 'profile_update'
+               ORDER BY t.sort, t.id
+               LIMIT 1""",
+            (employee_email,)).fetchone()
+    if task is None:
+        raise KeyError(f"No profile update task is assigned to {employee_email}")
+    reported = evidence or "Person reported that the Endava Profile is ready."
+    result = update_task_status(
+        employee_email,
+        task["task_id"],
+        "done",
+        reported,
+        note or "Marked from the pre-bench chat.")
+    return {**result, "title": task["title"]}
+
+
+def _find_assigned_task_by_title(conn, employee_email: str, title_query: str):
+    tasks = conn.execute(
+        """SELECT pt.task_id, t.title
+           FROM person_tasks pt JOIN tasks t ON t.id = pt.task_id
+           WHERE pt.email = ?
+           ORDER BY t.sort, t.id""",
+        (employee_email,)).fetchall()
+    for task in tasks:
+        if _text_key(task["title"]) == _text_key(title_query):
+            return task
+    for task in tasks:
+        if _title_matches(task["title"], title_query):
+            return task
+    return None
+
+
+def _ensure_mandatory_task_from_knowledge(conn, employee_email: str, title_query: str):
+    person = conn.execute("SELECT * FROM people WHERE email = ?", (employee_email,)).fetchone()
+    if person is None:
+        raise FileNotFoundError(f"No bench state for '{employee_email}'.")
+    mandatory = conn.execute(
+        "SELECT * FROM knowledge WHERE kind = 'mandatory_course' ORDER BY id").fetchall()
+    knowledge_item = next((item for item in mandatory if _title_matches(item["title"], title_query)), None)
+    if knowledge_item is None:
+        return None
+
+    task = conn.execute(
+        "SELECT id, title FROM tasks WHERE track_id = ? AND lower(title) = lower(?)",
+        (person["track_id"], knowledge_item["title"])).fetchone()
+    if task is None:
+        cursor = conn.execute(
+            """INSERT INTO tasks (track_id, title, description, category, due_date, follow_up,
+                                  est_hours, link, evidence_required, requires_approval, sort)
+               VALUES (?, ?, ?, 'course', ?, 'daily', 2, ?, 1, 0, 0)""",
+            (
+                person["track_id"],
+                knowledge_item["title"],
+                "Mandatory Endava course for everyone on bench; register completion in Endava University.",
+                person["bench_start_date"],
+                knowledge_item["url"],
+            ))
+        task_id = cursor.lastrowid
+        title = knowledge_item["title"]
+    else:
+        task_id = task["id"]
+        title = task["title"]
+
+    conn.execute(
+        "INSERT OR IGNORE INTO person_tasks (email, task_id) VALUES (?, ?)",
+        (employee_email, task_id))
+    return {"task_id": task_id, "title": title}
+
+
+def mark_task_done_by_title(employee_email: str, title_query: str,
+                            evidence: str = "", note: str = "") -> dict:
+    """Mark a named task as done without requiring the agent to know its task id. (Write tool)
+
+    This handles natural chat like "hice Claude Partner Network Learning Path". If a
+    mandatory course exists only in the knowledge grid, it is materialized into the
+    person's track before being marked done.
+    """
+    with connect() as conn:
+        task = _find_assigned_task_by_title(conn, employee_email, title_query)
+        if task is None:
+            task = _ensure_mandatory_task_from_knowledge(conn, employee_email, title_query)
+        if task is None:
+            raise KeyError(f"No assigned task matches '{title_query}' for {employee_email}")
+    reported = evidence or f"Person reported completing: {title_query}"
+    result = update_task_status(
+        employee_email,
+        task["task_id"],
+        "done",
+        reported,
+        note or "Marked from chat by task title.")
+    return {**result, "title": task["title"]}
 
 
 def record_check_in(employee_email: str, period: str, planned: list[str] | None = None,

@@ -5,7 +5,8 @@ the BOT polls /api/v1/notifications/pending and delivers via Teams proactive mes
 Every contact is logged in `notifications` — the daily-update trail Pedro asked for.
 
 Rules (evaluated by the scheduler in webapp startup, and testable directly):
-- pre_bench + start date within 7 days  -> 'pre_bench_greeting' (once): heads-up + update profile.
+- pre_bench + start date in 2-10 days   -> 'pre_bench_greeting' (once): update profile first.
+- pre_bench + start date tomorrow       -> 'planning_prompt' (once): invite planning.
 - active + start date reached           -> 'kickoff' (once): mandatory courses, suggestions
                                            from their Endava Profile, and "what's your plan?".
 - active >= 7 days                      -> 'progress_check' (weekly): verified progress vs plan.
@@ -20,17 +21,32 @@ from bench.tools.knowledge import suggest_for_profile
 from bench.tools.state import list_bench_people, load_bench_state
 from bench.tools.verify_goals import verify_progress
 
+PROFILE_PREP_WINDOW_DAYS = 10
+
+
+def _email_key(email: str) -> str:
+    return email.strip().lower()
+
+
+def _first_name(name: str) -> str:
+    return name.split()[0] if name.split() else name
+
+
+def _days_label(days: int) -> str:
+    return "1 día" if days == 1 else f"{days} días"
+
 
 def save_conversation_ref(email: str, conversation_id: str) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO conversation_refs (email, conversation_id, updated_at) "
-            "VALUES (?, ?, ?)", (email, conversation_id, datetime.now(timezone.utc).isoformat()))
+            "VALUES (?, ?, ?)",
+            (_email_key(email), conversation_id, datetime.now(timezone.utc).isoformat()))
 
 
 def _already_sent(conn, email: str, kind: str, since_days: int | None = None) -> bool:
     query = "SELECT COUNT(*) FROM notifications WHERE email = ? AND kind = ?"
-    params: list = [email, kind]
+    params: list = [_email_key(email), kind]
     if since_days is not None:
         query += " AND created_at >= date('now', ?)"
         params.append(f"-{since_days} days")
@@ -40,13 +56,13 @@ def _already_sent(conn, email: str, kind: str, since_days: int | None = None) ->
 def _delivered(conn, email: str, kind: str) -> bool:
     return conn.execute(
         "SELECT COUNT(*) FROM notifications WHERE email = ? AND kind = ? "
-        "AND delivered_at IS NOT NULL", (email, kind)).fetchone()[0] > 0
+        "AND delivered_at IS NOT NULL", (_email_key(email), kind)).fetchone()[0] > 0
 
 
 def _queue(conn, email: str, kind: str, message: str) -> None:
     conn.execute(
         "INSERT INTO notifications (email, kind, message, created_at) VALUES (?, ?, ?, ?)",
-        (email, kind, message, datetime.now(timezone.utc).isoformat()))
+        (_email_key(email), kind, message, datetime.now(timezone.utc).isoformat()))
 
 
 def _fmt_items(items: list[dict]) -> str:
@@ -61,14 +77,33 @@ def _fmt_items(items: list[dict]) -> str:
     return "\n".join(lines) or "- (pendiente de carga)"
 
 
+def _profile_prep_message(person: dict, days_until_start: int) -> str:
+    return (
+        f"Hola {_first_name(person['name'])}, ¿cómo estás? Soy tu Coach de Bench. "
+        f"En {_days_label(days_until_start)} entrás en bench (el {person['bench_start_date']}). "
+        "¿Te parece si empezás a actualizar tu Endava Profile? "
+        "Una vez que lo tengas listo, avisame por favor y continuamos charlando "
+        "para planificar un bench exitoso."
+    )
+
+
+def _planning_prompt_message(person: dict) -> str:
+    return (
+        f"Hola {_first_name(person['name'])}, ¿cómo estás? Mañana entrás en bench. "
+        "¿Te parece si empezamos a planificar tu período en bench?"
+    )
+
+
 def _kickoff_message(state: dict) -> str:
     suggestions = suggest_for_profile(state.get("profile_text", ""))
     return (
-        f"¡Hola {state['employee_name'].split()[0]}! 👋 Hoy arranca tu bench y soy tu coach.\n\n"
-        f"**Cursos obligatorios (sí o sí):**\n{_fmt_items(suggestions['mandatory'])}\n\n"
+        f"¡Hola {_first_name(state['employee_name'])}! Hoy arranca tu bench. "
+        "Para empezar con foco, primero miremos los Mandatory y después armamos "
+        "un camino de certificaciones o cursos según tu Endava Profile.\n\n"
+        f"**Mandatory:**\n{_fmt_items(suggestions['mandatory'])}\n\n"
         f"**Certificaciones sugeridas según tu perfil:**\n{_fmt_items(suggestions['certifications'])}\n\n"
         f"**Cursos recomendados:**\n{_fmt_items(suggestions['courses'])}\n\n"
-        "¿Cuál es tu plan? Contame por dónde querés empezar y lo registramos juntos."
+        "Cuando quieras, contame por dónde te gustaría empezar y lo planificamos juntos."
     )
 
 
@@ -94,13 +129,15 @@ def generate_due_notifications(today: str | None = None) -> int:
             start = person["bench_start_date"]
             status = computed_status(start, today_d.isoformat())
             start_d = date.fromisoformat(start) if start else None
-            if status == "pre_bench" and start_d and 0 < (start_d - today_d).days <= 7:
-                if not _already_sent(conn, email, "pre_bench_greeting"):
+            days_until_start = (start_d - today_d).days if start_d else None
+            if status == "pre_bench" and days_until_start is not None:
+                if days_until_start == 1 and not _already_sent(conn, email, "planning_prompt"):
+                    _queue(conn, email, "planning_prompt", _planning_prompt_message(person))
+                    queued += 1
+                elif (1 < days_until_start <= PROFILE_PREP_WINDOW_DAYS
+                      and not _already_sent(conn, email, "pre_bench_greeting")):
                     _queue(conn, email, "pre_bench_greeting",
-                           f"¡Hola {person['name'].split()[0]}! 👋 En {(start_d - today_d).days} "
-                           f"día(s) entrás a bench (el {start}). Primer paso sugerido: empezá a "
-                           "actualizar tu Endava Profile así arrancamos con tu plan al día. "
-                           "Cuando quieras te cuento qué te va a tocar.")
+                           _profile_prep_message(person, days_until_start))
                     queued += 1
             if status == "active" and (start_d is None or start_d <= today_d):
                 if not _already_sent(conn, email, "kickoff"):
@@ -119,8 +156,13 @@ def pending_notifications() -> list[dict]:
     """Undelivered notifications joined with their Teams conversation ref."""
     with connect() as conn:
         rows = conn.execute(
-            """SELECT n.id, n.email, n.kind, n.message, c.conversation_id
-               FROM notifications n LEFT JOIN conversation_refs c ON c.email = n.email
+            """SELECT n.id, n.email, n.kind, n.message,
+                      (SELECT c.conversation_id
+                         FROM conversation_refs c
+                        WHERE lower(c.email) = lower(n.email)
+                        ORDER BY c.updated_at DESC
+                        LIMIT 1) AS conversation_id
+               FROM notifications n
                WHERE n.delivered_at IS NULL ORDER BY n.id""").fetchall()
     return [dict(r) for r in rows]
 

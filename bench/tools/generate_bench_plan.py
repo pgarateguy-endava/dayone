@@ -5,7 +5,7 @@ from bench.tools.verify_goals import FOLLOW_UP_LABELS
 
 _CATEGORY_TITLES = {
     "course": "Courses", "certification": "Certifications",
-    "profile_update": "Profile updates", "portfolio": "Portfolio projects", "admin": "Admin",
+    "profile_update": "Profile updates", "portfolio": "Workshop - LABS", "admin": "Admin",
 }
 
 

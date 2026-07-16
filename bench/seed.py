@@ -55,6 +55,10 @@ RESPONSIBLES = {
 # (track, title, description, category, due_date, follow_up, est_hours, link,
 #  evidence_required, requires_approval, sort, contacts[(name, email, note)])
 TASKS = [
+    ("aws-backend-track", "Claude Partner Network Learning Path",
+     "Mandatory Endava course for everyone on bench; register completion in Endava University.",
+     "course", "2026-07-21", "daily", 2,
+     "https://anthropic.skilljar.com/page/claude-partner-network-learning-path", 1, 0, 0, []),
     ("aws-backend-track", "AWS Cloud Practitioner Essentials",
      "Complete the full course and log progress percentage daily.",
      "course", "2026-07-24", "twice_daily", 12,
@@ -94,6 +98,10 @@ TASKS = [
      "portfolio", None, "biweekly", 8,
      "", 1, 0, 8, []),
 
+    ("frontend-modern-track", "Claude Partner Network Learning Path",
+     "Mandatory Endava course for everyone on bench; register completion in Endava University.",
+     "course", "2026-07-21", "daily", 2,
+     "https://anthropic.skilljar.com/page/claude-partner-network-learning-path", 1, 0, 0, []),
     ("frontend-modern-track", "Advanced React Patterns",
      "Udemy Business course with exercises.",
      "course", "2026-07-28", "twice_daily", 10,

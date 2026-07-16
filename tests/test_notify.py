@@ -11,7 +11,7 @@ from bench.notify import (
 )
 from bench.seed import seed
 from bench.tools.knowledge import suggest_for_profile
-from bench.tools.state import start_bench
+from bench.tools.state import load_bench_state, mark_profile_update_done, start_bench
 
 
 @pytest.fixture()
@@ -43,6 +43,8 @@ def test_proactive_rules_pre_bench_kickoff_and_progress(seeded):
     kinds = {p["email"]: p["kind"] for p in pending}
     assert kinds["ana@test.com"] == "pre_bench_greeting"
     assert kinds["beto@test.com"] == "kickoff"
+    assert "actualizar tu Endava Profile" in [p for p in pending if p["email"] == "ana@test.com"][0]["message"]
+    assert "planificar un bench exitoso" in [p for p in pending if p["email"] == "ana@test.com"][0]["message"]
     assert "Claude Partner Network" in [p for p in pending if p["email"] == "beto@test.com"][0]["message"]
     ana = [p for p in pending if p["email"] == "ana@test.com"][0]
     assert ana["conversation_id"] == "conv-ana"
@@ -57,7 +59,7 @@ def test_proactive_rules_pre_bench_kickoff_and_progress(seeded):
 
 
 def test_changing_the_date_recomputes_status_and_refires(seeded):
-    from bench.tools.state import computed_status, load_bench_state, set_bench_start_date
+    from bench.tools.state import computed_status, set_bench_start_date
 
     today = date.today()
     start_bench("Caro", "caro@test.com", "backend-dev", "aws-backend-track")
@@ -76,3 +78,42 @@ def test_changing_the_date_recomputes_status_and_refires(seeded):
     assert generate_due_notifications() == 1
     assert pending_notifications()[-1]["kind"] == "kickoff"
     assert computed_status(None) == "inactive"
+
+
+def test_planning_prompt_fires_one_day_before_bench(seeded):
+    today = date.today()
+    start_bench("Dani", "dani@test.com", "backend-dev", "aws-backend-track",
+                bench_start_date=(today + timedelta(days=1)).isoformat())
+
+    assert generate_due_notifications() == 1
+    pending = pending_notifications()
+    assert pending[0]["kind"] == "planning_prompt"
+    assert "Mañana entrás en bench" in pending[0]["message"]
+    assert "planificar tu período en bench" in pending[0]["message"]
+    assert generate_due_notifications() == 0
+
+
+def test_mark_profile_update_done_finds_employee_task(seeded):
+    start_bench("Elena", "elena@test.com", "backend-dev", "aws-backend-track")
+
+    result = mark_profile_update_done("elena@test.com", "Hoy terminé de preparar el profile")
+
+    assert result["title"] == "Update Endava profile"
+    state = load_bench_state("elena@test.com")
+    profile_task = [t for t in state["tasks"] if t["category"] == "profile_update"][0]
+    assert profile_task["status"] == "done"
+    assert "preparar el profile" in profile_task["evidence"]
+
+
+def test_conversation_ref_email_case_does_not_block_delivery(seeded):
+    today = date.today()
+    start_bench("Pedro", "pedro.garateguy@endava.com", "backend-dev", "aws-backend-track",
+                bench_start_date=(today + timedelta(days=5)).isoformat())
+
+    assert generate_due_notifications() == 1
+    save_conversation_ref("Pedro.Garateguy@Endava.com", "conv-pedro")
+
+    pending = pending_notifications()
+    assert len(pending) == 1
+    assert pending[0]["email"] == "pedro.garateguy@endava.com"
+    assert pending[0]["conversation_id"] == "conv-pedro"

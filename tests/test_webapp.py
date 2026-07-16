@@ -46,8 +46,30 @@ def test_onboard_task_update_and_dashboard(client):
     client.post("/person/ada@test.com/checkin", data={"period": "pm", "blockers": ""},
                 follow_redirects=False)
     dash = client.get("/").text
-    assert "Ada Lovelace" in dash and "0/8 done" in dash
+    assert "Ada Lovelace" in dash and "0/9 done" in dash
     assert "EOD report - Ada Lovelace" in client.get("/person/ada@test.com/report").text
+
+
+def test_review_by_employee_tree_replaces_tracks_in_nav(client):
+    client.post("/onboard", data={
+        "employee": "Ada Lovelace", "email": "ada@test.com",
+        "profile": "backend-dev", "track": "aws-backend-track",
+    }, follow_redirects=False)
+    client.post("/person/ada@test.com/task/5", data={
+        "status": "done", "evidence": "Profile updated",
+    }, follow_redirects=False)
+
+    page = client.get("/review?email=ada@test.com").text
+
+    assert '<a href="/review">Review</a>' in page
+    assert '<a href="/tracks">Tracks</a>' not in page
+    assert "Task tree" in page
+    assert "Endava Profile" in page
+    assert "profile_update" not in page
+    assert "Workshop - LABS" in page
+    assert "Update Endava profile" in page
+    assert "Profile updated" in page
+    assert "Open editable board" in page
 
 
 def test_roles_abm_create_edit_delete(client):
@@ -77,7 +99,7 @@ def test_roles_abm_create_edit_delete(client):
 
 def test_tracks_abm_task_inline_edit_and_delete(client):
     page = client.get("/tracks").text
-    assert "AWS Backend Upskilling Track" in page and "8 tasks" in page
+    assert "AWS Backend Upskilling Track" in page and "9 tasks" in page
 
     detail = client.get("/tracks/aws-backend-track").text
     assert "Juan Pérez" in detail and "Add task" in detail

@@ -10,6 +10,7 @@ from bench.tools.eod_report import build_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
 from bench.tools.state import (
     load_bench_state,
+    mark_task_done_by_title,
     record_check_in,
     start_bench,
     update_task_status,
@@ -28,7 +29,8 @@ def seeded_db(tmp_path, monkeypatch):
 def test_seed_loads_relational_catalog(seeded_db):
     track = load_track("aws-backend-track")
     assert track["name"] == "AWS Backend Upskilling Track"
-    assert len(track["tasks"]) == 8  # one-to-many
+    assert len(track["tasks"]) == 9  # one-to-many
+    assert track["tasks"][0]["title"] == "Claude Partner Network Learning Path"
     course = next(t for t in track["tasks"] if t["title"].startswith("AWS Cloud Practitioner"))
     assert course["follow_up"] == "twice_daily"
     assert course["contacts"][0]["name"] == "Juan Pérez"
@@ -38,7 +40,7 @@ def test_seed_loads_relational_catalog(seeded_db):
 
 def test_start_bench_instantiates_person_tasks(seeded_db):
     state = start_bench("Ada", "ada@test.com", "backend-dev", "aws-backend-track")
-    assert len(state["tasks"]) == 8
+    assert len(state["tasks"]) == 9
     assert all(t["status"] == "pending" for t in state["tasks"])
 
 
@@ -65,6 +67,21 @@ def test_verify_progress_tracks_status_and_freshness(seeded_db):
     assert result["tasks_done"] == 0
 
 
+def test_mark_task_done_by_title_handles_mandatory_course(seeded_db):
+    start_bench("Ada", "ada@test.com", "backend-dev", "aws-backend-track")
+
+    result = mark_task_done_by_title(
+        "ada@test.com",
+        "hice Claude Partner Network Learning Path",
+        evidence="reported in chat")
+
+    assert result["title"] == "Claude Partner Network Learning Path"
+    state = load_bench_state("ada@test.com")
+    claude = next(t for t in state["tasks"] if t["title"] == "Claude Partner Network Learning Path")
+    assert claude["status"] == "done"
+    assert claude["evidence"] == "reported in chat"
+
+
 def test_eod_report_renders_and_saves(seeded_db):
     state = start_bench("Ada", "ada@test.com", "backend-dev", "aws-backend-track")
     update_task_status("ada@test.com", state["tasks"][0]["task_id"], "done",
@@ -84,7 +101,7 @@ def test_create_task_backfills_people_on_bench(seeded_db):
     create_task("aws-backend-track", "New security course", category="course",
                 follow_up="weekly", contacts=[{"name": "Sofía", "note": "took it"}])
     state = load_bench_state("ada@test.com")
-    assert len(state["tasks"]) == 9  # new catalog task instantiated for Ada too
+    assert len(state["tasks"]) == 10  # new catalog task instantiated for Ada too
 
 
 def test_daily_cycle_graph_pm_produces_report(seeded_db):

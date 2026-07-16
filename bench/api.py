@@ -13,7 +13,14 @@ from bench.graph import build_graph
 from bench.tools import catalog
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
-from bench.tools.state import load_bench_state, start_bench, update_task_status
+from bench.tools.knowledge import suggest_for_profile
+from bench.tools.state import (
+    load_bench_state,
+    mark_profile_update_done,
+    mark_task_done_by_title,
+    start_bench,
+    update_task_status,
+)
 from bench.tools.verify_goals import verify_progress
 
 router = APIRouter(prefix="/api/v1", tags=["bench-api"])
@@ -50,9 +57,13 @@ class TaskUpdateIn(BaseModel):
 
 def _state_or_404(email: str) -> dict:
     try:
-        return load_bench_state(email)
+        return load_bench_state(_email_key(email))
     except FileNotFoundError:
         raise HTTPException(404, detail=f"'{email}' is not on bench. Use /onboard first.")
+
+
+def _email_key(email: str) -> str:
+    return email.strip().lower()
 
 
 def _plan_reply(state: dict) -> str:
@@ -96,6 +107,83 @@ def _status_reply(state: dict) -> str:
     return "\n".join(lines)
 
 
+def _plain_text(text: str) -> str:
+    return (
+        text.strip().lower()
+        .replace("á", "a")
+        .replace("é", "e")
+        .replace("í", "i")
+        .replace("ó", "o")
+        .replace("ú", "u")
+        .replace("ü", "u")
+    )
+
+
+def _looks_like_profile_done(text: str) -> bool:
+    plain = _plain_text(text)
+    has_profile = "profile" in plain or "perfil" in plain
+    done_words = (
+        "termine", "prepare", "actualice", "complete", "finalice",
+        "listo", "hecho", "ready", "done",
+    )
+    return has_profile and any(word in plain for word in done_words)
+
+
+def _looks_like_named_task_done(text: str) -> bool:
+    plain = _plain_text(text)
+    done_words = (
+        "termine", "hice", "complete", "finalice", "aprobie",
+        "listo", "done", "finished", "completed",
+    )
+    named_hints = (
+        "claude", "aws", "azure", "bedrock", "serverless", "react",
+        "certification", "certificacion", "learning path", "lab",
+    )
+    return any(word in plain for word in done_words) and any(hint in plain for hint in named_hints)
+
+
+def _last_delivered_notification_kind(email: str) -> str | None:
+    from bench.notify import notification_log
+
+    for notification in notification_log(_email_key(email)):
+        if notification["delivered_at"]:
+            return notification["kind"]
+    return None
+
+
+def _looks_like_planning_acceptance(text: str, email: str) -> bool:
+    plain = _plain_text(text)
+    if any(word in plain for word in ("planificar", "planifiquemos", "bench exitoso")):
+        return True
+    affirmatives = {"si", "dale", "ok", "okay", "claro", "vamos", "yes"}
+    accepted = plain in affirmatives or plain.startswith("me parece")
+    return accepted and _last_delivered_notification_kind(email) == "planning_prompt"
+
+
+def _fmt_study_items(items: list[dict]) -> str:
+    lines = []
+    for item in items:
+        line = f"- **{item['title']}**" + (f" ({item['provider']})" if item["provider"] else "")
+        if item["url"]:
+            line += f" — {item['url']}"
+        if item["register_url"]:
+            line += f"\n  Al terminarlo, registralo acá: {item['register_url']}"
+        lines.append(line)
+    return "\n".join(lines) or "- Lo revisamos juntos cuando tengas más contexto del Profile."
+
+
+def _planning_reply(state: dict) -> str:
+    suggestions = suggest_for_profile(state.get("profile_text", ""))
+    return (
+        "Excelente. Para planificar un bench exitoso, empecemos simple:\n\n"
+        f"**1. Mandatory primero**\n{_fmt_study_items(suggestions['mandatory'])}\n\n"
+        "**2. Después elegimos el camino**\n"
+        "Con tu Endava Profile miramos qué certificaciones o cursos convienen más para tu perfil.\n\n"
+        f"**Certificaciones sugeridas:**\n{_fmt_study_items(suggestions['certifications'])}\n\n"
+        "Si querés, contame por cuál Mandatory querés empezar y lo registramos como tu primer foco."
+    )
+
+
 class ConversationRefIn(BaseModel):
     email: str
     conversation_id: str
@@ -106,7 +194,7 @@ def register_conversation_ref(body: ConversationRefIn):
     """The bot registers where each person talks, enabling proactive messages."""
     from bench.notify import save_conversation_ref
 
-    save_conversation_ref(body.email, body.conversation_id)
+    save_conversation_ref(_email_key(body.email), body.conversation_id)
     return {"ok": True}
 
 
@@ -137,7 +225,7 @@ def get_catalog():
 @router.post("/onboard")
 def onboard(body: OnboardIn):
     try:
-        state = start_bench(body.employee_name, body.employee_email,
+        state = start_bench(body.employee_name, _email_key(body.employee_email),
                             body.profile_id, body.track_id)
     except KeyError as exc:
         raise HTTPException(400, detail=str(exc))
@@ -161,9 +249,10 @@ def report(email: str):
 
 @router.post("/task")
 def task_update(body: TaskUpdateIn):
-    _state_or_404(body.employee_email)
+    employee_email = _email_key(body.employee_email)
+    _state_or_404(employee_email)
     try:
-        update_task_status(body.employee_email, body.task_id, body.status,
+        update_task_status(employee_email, body.task_id, body.status,
                            body.evidence, body.note)
     except (KeyError, ValueError) as exc:
         raise HTTPException(400, detail=str(exc))
@@ -172,11 +261,12 @@ def task_update(body: TaskUpdateIn):
 
 @router.post("/checkin")
 def checkin(body: CheckinIn):
-    _state_or_404(body.employee_email)
+    employee_email = _email_key(body.employee_email)
+    _state_or_404(employee_email)
     if body.period not in ("am", "pm"):
         raise HTTPException(400, detail="period must be 'am' or 'pm'")
     result = build_graph().invoke({
-        "employee_email": body.employee_email, "period": body.period,
+        "employee_email": employee_email, "period": body.period,
         "planned": body.planned, "blockers": body.blockers,
         "task_updates": body.task_updates,
     })
@@ -191,18 +281,32 @@ def checkin(body: CheckinIn):
 def _deterministic_fallback(body: ChatIn) -> str:
     """When Bedrock/langchain is unavailable the channel still works: a few keyword
     shortcuts over the deterministic tools, plus the verified status."""
+    employee_email = _email_key(body.employee_email)
     try:
-        state = load_bench_state(body.employee_email)
+        state = load_bench_state(employee_email)
     except FileNotFoundError:
         return ("No estás en bench todavía y el chat con IA no está disponible. "
                 "Pedile a tu People Lead que te dé de alta desde el backoffice web.")
-    text = body.text.strip().lower()
+    text = _plain_text(body.text)
+    if _looks_like_profile_done(body.text):
+        result = mark_profile_update_done(employee_email, evidence=body.text.strip())
+        return (f"Excelente, lo dejo registrado: **{result['title']}** quedó como done. "
+                "En unos días te escribiré para planificar un bench exitoso.")
+    if _looks_like_named_task_done(body.text):
+        try:
+            result = mark_task_done_by_title(employee_email, body.text.strip(), evidence=body.text.strip())
+            return (f"Excelente, lo dejo registrado: **{result['title']}** quedó como done. "
+                    "Buen avance.")
+        except KeyError:
+            pass
     if text in ("plan", "my plan", "mi plan"):
         return _plan_reply(state)
     if text in ("tasks", "tareas", "mis tareas"):
         return _tasks_reply(state)
     if text in ("report", "reporte", "summary", "resumen", "eod"):
         return _report_reply(state)
+    if _looks_like_planning_acceptance(body.text, employee_email):
+        return _planning_reply(state)
     return (_status_reply(state)
             + "\n\n_(Chat con IA no disponible — este es tu estado verificado. "
               "Atajos: `plan`, `tasks`, `report`.)_")
@@ -216,7 +320,7 @@ def chat(body: ChatIn):
     try:
         from bench.agent_graph import run_chat  # needs langchain-aws + AWS creds
 
-        return {"reply": run_chat(body.employee_email, body.text, body.conversation_id)}
+        return {"reply": run_chat(_email_key(body.employee_email), body.text, body.conversation_id)}
     except (SystemExit, Exception) as exc:
         import traceback
 
