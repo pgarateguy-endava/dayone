@@ -13,6 +13,17 @@ TRACKS_DIR = REPO_ROOT / "tracks"
 PROGRESS_DIR = REPO_ROOT / ".local-progress"
 REPORTS_DIR = PROGRESS_DIR / "reports"
 
+# Bedrock defaults, shared by every LLM surface (chat agent, daily-cycle summary,
+# Strands variant) so they don't drift. ADR 0004: model access is in us-west-2.
+BEDROCK_REGION = os.environ.get("AWS_REGION", "us-west-2")
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+
+
+# Shared bearer token guarding /api/v1. Unset => open (local dev/tests); set => required.
+def api_token() -> str | None:
+    """Read at call time so tests/pilots can set BENCH_API_TOKEN in the environment."""
+    return os.environ.get("BENCH_API_TOKEN") or None
+
 
 def bench_enabled() -> bool:
     """Feature flag: the Bench domain is opt-in (BENCH_ENABLED=1)."""

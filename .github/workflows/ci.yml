@@ -5,7 +5,23 @@ on:
   pull_request:
 
 jobs:
-  test:
+  onboarding:
+    # Golden rule (ADR 0001): the onboarding workshop (Lab 1) must run with the Bench
+    # domain disabled and without the web/agent extras.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: '3.11'
+      - run: uv sync
+      - run: uv run pytest tests/test_plan.py
+
+  bench:
+    # Bench domain: full suite — tools, daily-cycle graph, /api/v1 (with token auth),
+    # web UI, and the proactive/notification engine. The web + API tests need the `ui`
+    # group (FastAPI). The conversational agent (`agentic` extra) needs AWS credentials and
+    # is not exercised in CI; `/chat` is covered through its deterministic fallback.
     runs-on: ubuntu-latest
     env:
       BENCH_ENABLED: "1"
@@ -14,5 +30,5 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: '3.11'
-      - run: uv sync --dev
-      - run: uv run pytest
+      - run: uv sync --group ui
+      - run: uv run --group ui pytest

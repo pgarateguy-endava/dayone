@@ -44,6 +44,25 @@ def save_conversation_ref(email: str, conversation_id: str) -> None:
             (_email_key(email), conversation_id, datetime.now(timezone.utc).isoformat()))
 
 
+def has_conversation_ref(email: str) -> bool:
+    """True if this person has ever talked to the bot (so a proactive push can land)."""
+    with connect() as conn:
+        return conn.execute(
+            "SELECT 1 FROM conversation_refs WHERE lower(email) = lower(?) LIMIT 1",
+            (_email_key(email),)).fetchone() is not None
+
+
+def queue_notification(email: str, kind: str, message: str) -> bool:
+    """Queue a proactive message for `email`, but only if they have a Teams conversation
+    ref (otherwise it could never be delivered and would pile up). Returns True when
+    queued. Used by the daily cycle to push EOD reports to responsibles (ADR 0004)."""
+    if not has_conversation_ref(email):
+        return False
+    with connect() as conn:
+        _queue(conn, email, kind, message)
+    return True
+
+
 def _already_sent(conn, email: str, kind: str, since_days: int | None = None) -> bool:
     query = "SELECT COUNT(*) FROM notifications WHERE email = ? AND kind = ?"
     params: list = [_email_key(email), kind]

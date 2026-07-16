@@ -6,9 +6,10 @@ agentic graph (Bedrock) when available, with a deterministic fallback otherwise.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from bench.config import api_token
 from bench.graph import build_graph
 from bench.tools import catalog
 from bench.tools.eod_report import build_eod_report, save_eod_report
@@ -23,7 +24,19 @@ from bench.tools.state import (
 )
 from bench.tools.verify_goals import verify_progress
 
-router = APIRouter(prefix="/api/v1", tags=["bench-api"])
+def require_api_token(authorization: str | None = Header(default=None)) -> None:
+    """Shared-secret gate for the whole service API. When BENCH_API_TOKEN is unset the
+    API is open (local dev, tests); when set, callers must send
+    `Authorization: Bearer <token>`. The Teams bot sends the same value."""
+    token = api_token()
+    if token is None:
+        return
+    if authorization != f"Bearer {token}":
+        raise HTTPException(401, detail="Missing or invalid API token.")
+
+
+router = APIRouter(prefix="/api/v1", tags=["bench-api"],
+                   dependencies=[Depends(require_api_token)])
 
 
 class OnboardIn(BaseModel):
@@ -321,9 +334,14 @@ def chat(body: ChatIn):
         from bench.agent_graph import run_chat  # needs langchain-aws + AWS creds
 
         return {"reply": run_chat(_email_key(body.employee_email), body.text, body.conversation_id)}
-    except (SystemExit, Exception) as exc:
+    except (ImportError, SystemExit) as exc:
+        # Agentic extras or AWS access not configured — expected in deterministic mode.
+        print(f"[chat] agent unavailable ({exc}); serving deterministic reply")
+        return {"reply": _deterministic_fallback(body)}
+    except Exception as exc:
+        # Unexpected agent failure — log loudly, but keep the channel alive.
         import traceback
 
-        print(f"[chat] AI unavailable, using deterministic fallback: {exc!r}")
+        print(f"[chat] UNEXPECTED agent error: {exc!r}; serving deterministic reply")
         traceback.print_exc()
         return {"reply": _deterministic_fallback(body)}

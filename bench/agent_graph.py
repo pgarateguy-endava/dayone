@@ -48,7 +48,7 @@ except Exception:  # pragma: no cover
 
     _CHECKPOINTER = InMemorySaver()
 
-from bench.config import require_bench_enabled
+from bench.config import BEDROCK_MODEL_ID, BEDROCK_REGION, require_bench_enabled
 from bench.prompts import BENCH_SYSTEM_PROMPT
 from bench.tools import catalog as _catalog
 from bench.tools.eod_report import build_eod_report as _build_eod_report
@@ -209,8 +209,8 @@ def make_tools(employee_email: str) -> list:
 def build_agent_graph(employee_email: str):
     """Agentic loop with conversation memory: llm <-> ToolNode until no tool calls."""
     model = ChatBedrockConverse(
-        model_id=os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6"),
-        region_name=os.environ.get("AWS_REGION", "us-west-2"),
+        model_id=BEDROCK_MODEL_ID,
+        region_name=BEDROCK_REGION,
     )
     tools = make_tools(employee_email)
     model_with_tools = model.bind_tools(tools)
