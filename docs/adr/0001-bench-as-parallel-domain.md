@@ -27,3 +27,10 @@ Build Bench as a **parallel domain** in the `feature/bench` branch:
   if the team adopts it.
 - Some duplication (two app entry points) accepted for teaching clarity.
 - Profile schema changes must consider both domains.
+
+## UI completion amendment (2026-07-20)
+
+Bench remains a parallel domain, but its local source of truth is now the relational SQLite catalog and
+state store, not a historical `tracks/` data directory or YAML representation. UI completion must not
+change the onboarding domain's YAML contract. Bench-specific lifecycle, audit, report, notification,
+and stable person identity rules belong to Bench tools and storage seams.
