@@ -14,16 +14,20 @@ Estado: `feature/bench` con el hardening del piloto integrado. 32 tests en verde
 - **Bedrock Knowledge Base + S3** para RAG sobre los PDF de perfil (journey B3): que el agente
   responda con citas en vez del match por tags actual.
 
-## 2. UI — completar los ABM
+## 2. UI — completar el backoffice local
 
-- Que **todas** las vistas sean ABM completo (alta / edición inline / baja): roles, tracks,
-  tareas, knowledge y personas. Auditar y cerrar lo que falte editar.
-- Probar cada flujo end-to-end, incluido cambiar la fecha de bench y ver que dispara el
-  mensaje proactivo (el bug anterior lo arregló el hardening; verificarlo en vivo).
+- Cerrar el contrato de requisitos en `PRODUCT_SPEC.md` y `BACKOFFICE_SPEC.md`.
+- Que **todas** las vistas sean descubribles y tengan ABM completo (alta / edición inline / baja o
+  archivado): roles, tracks, tareas, knowledge, responsables y personas. En particular faltan el
+  mantenimiento del ciclo de vida de personas y la edición de responsables.
+- Mostrar en el detalle de persona el estado de acceso/approval simulado y el action log; nunca
+  conceder permisos reales desde esta UI local.
+- Probar cada flujo end-to-end, incluido cambiar la fecha de bench y ver que dispara la evaluación
+  inmediata del mensaje proactivo.
 
 ## 3. Feature — asignar responsables
 
-- Asignar / quitar responsables por track desde la UI y confirmar que el reporte EOD les
+- Asignar / editar / quitar responsables por track desde la UI y confirmar que el reporte EOD les
   llega (archivo + mensaje proactivo del bot).
 - Poder responderle a un responsable desde el flujo.
 
