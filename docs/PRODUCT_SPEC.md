@@ -130,3 +130,87 @@ answer, and must be resolved before any non-workshop use.
 - Gateway-based real provisioning.
 - Multi-employee/cohort backoffice.
 - Cost/latency-aware model routing.
+
+## Local web UI delivery slice
+
+The local web UI is the operator surface for the MVP. It supports the Bench domain described in
+`BENCH_SPEC.md` while preserving the onboarding assistant's source-of-truth and safety boundaries.
+This is a completion slice for the existing UI, not a replacement for the future AWS backoffice.
+
+### UI requirements
+
+The requirements below use stable IDs so implementation and end-to-end tests can refer to the same
+contract.
+
+#### Operator navigation and onboarding
+
+- **UI-FR-001 — Navigate the operator surface.** A manager, People Lead, or enablement operator can
+  reach the dashboard, employee review, onboarding, roles, tracks, tasks, responsibles, and AI
+  knowledge from the web UI. Catalog areas must not depend on an undocumented URL.
+- **UI-FR-002 — Create a bench onboarding record.** The operator can enter employee name and email,
+  select a role/profile and track, optionally set the bench start date, and optionally upload the
+  employee profile PDF. The UI validates required values and returns the operator to the created
+  employee record.
+- **UI-FR-003 — Show onboarding state.** The employee detail and operator review show the derived
+  lifecycle state (`inactive`, `pre_bench`, or `active` for the local MVP), start date, assigned
+  profile and track, progress, blockers, deadline risk, check-ins, plan, and available report.
+- **UI-FR-004 — Maintain employee records.** The operator can edit a person's name, email, role,
+  track, start date, and uploaded profile context, and can archive/remove a person with a clear
+  confirmation. Removal must not silently delete durable reports or action history.
+
+#### Catalog administration
+
+- **UI-FR-005 — Maintain roles.** The operator can create, inline-edit, and delete a role/profile,
+  including its summary, permission boundaries, and approval-required actions. Deletion is blocked
+  with an actionable message while the role is assigned to an active employee.
+- **UI-FR-006 — Maintain tracks.** The operator can create, edit, and delete a track, including
+  duration and eligible roles. Deletion is blocked while the track is assigned to an active employee.
+- **UI-FR-007 — Maintain tasks.** The operator can add, inline-edit, and delete a task template,
+  including category, deadline, follow-up cadence, estimated effort, link, evidence requirement,
+  approval flag, and reference contact. Changes must have an explicit effect on future assignments;
+  existing employee task history must not be rewritten without confirmation.
+- **UI-FR-008 — Maintain knowledge.** The operator can create, inline-edit, and delete mandatory
+  courses, certifications, and suggested courses, including provider, URLs, tags, and notes.
+- **UI-FR-009 — Maintain responsibles.** The operator can add, edit, and remove track responsibles
+  and their notification role. The track detail shows the complete recipient list and the UI makes
+  the report-delivery effect clear.
+
+#### Progress and communication
+
+- **UI-FR-010 — Update progress safely.** An operator or employee can update task status and evidence,
+  complete AM/PM check-ins, and see deterministic progress verification. The UI never lets generated
+  text override stored task state.
+- **UI-FR-011 — Explain and preserve reports.** The UI can generate an EOD report, show its recipient
+  list, preserve the report as a durable local record, and expose whether a proactive notification is
+  pending or delivered. Changing the bench start date re-evaluates lifecycle notifications immediately.
+- **UI-FR-012 — Surface approvals without granting access.** The employee and operator views show
+  requested, pending, approved, or denied simulated access where that state exists. The UI must never
+  claim that sensitive access was granted solely because a request was submitted, and this MVP does
+  not perform real IAM or repository provisioning.
+- **UI-FR-013 — Audit mutations.** Every create, edit, archive/delete, status change, date change,
+  approval-state change, report generation, and notification-delivery action records actor, time,
+  entity, action, and outcome. The relevant employee detail view exposes the action log.
+
+### UI quality and acceptance bar
+
+- **UI-NFR-001 — Local MVP boundary.** The UI runs locally with SQLite and simulated permissions;
+  storage seams remain compatible with the architecture's later DynamoDB/API path.
+- **UI-NFR-002 — Safety and data handling.** Permission data remains sourced from role/profile records,
+  not generated text or knowledge suggestions. User-provided values are escaped in rendered HTML;
+  destructive actions require confirmation and return an actionable validation error on failure.
+- **UI-NFR-003 — End-to-end confidence.** Tests cover happy path, validation, protected deletion,
+  inline edit, employee lifecycle maintenance, responsible assignment/removal, report generation,
+  and changing the bench date through the UI. The acceptance run exercises every UI-FR at least once.
+- **UI-NFR-004 — Trust boundary is explicit.** This local MVP is a trusted localhost operator tool;
+  it is not an employee-facing or shared deployment and must not be exposed as one. Authentication,
+  role-based web authorization, and per-employee information filtering are release blockers for any
+  hosted/shared version and are outside this UI completion slice.
+
+### Implementation audit at requirements update
+
+The current implementation already covers dashboard, review, onboarding, task progress/check-ins,
+reports, role CRUD, track CRUD, task CRUD, knowledge CRUD, responsible add/remove, and immediate
+date-triggered notifications. The completion gaps are employee lifecycle CRUD, responsible edit,
+discoverable navigation to tracks/tasks/responsibles, approval-state visibility, mutation audit
+history, and end-to-end coverage for those paths. These gaps are the prioritized UI work implied by
+the requirements above.
