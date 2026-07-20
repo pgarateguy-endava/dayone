@@ -15,3 +15,5 @@ class Config:
 
     # Bench service (bench/api.py) — the only backend the bot talks to.
     BACKEND_URL = os.environ.get("BENCH_BACKEND_URL", "http://localhost:8000")
+    # Shared bearer token for the service API (must match the service's BENCH_API_TOKEN).
+    API_TOKEN = os.environ.get("BENCH_API_TOKEN", "")

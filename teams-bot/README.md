@@ -1,67 +1,69 @@
-# Overview of the Basic Bot template
+# BenchCoach — Teams bot (thin channel)
 
-This app template is built on top of [Microsoft Teams SDK](https://aka.ms/teams-ai-library-v2).
-This template showcases a simple bot designed to respond to user messages within Microsoft Teams.
+This is the **Microsoft Teams channel** for the Bench Assistant. It is a deliberately *thin
+adapter* (see `../docs/adr/0004-teams-bot-thin-channel.md`): it holds **no domain logic, no
+persistent state, and no AWS credentials**. The Bench service (`bench/api.py`) is the only brain;
+Bedrock is called only by the service.
 
-## Get started with the template
+## What the bot does
 
-> **Prerequisites**
->
-> To run the template in your local dev machine, you will need:
->
-> - [Python](https://www.python.org/) >=3.12,<3.14.
-> - [Python extension](https://code.visualstudio.com/docs/languages/python), version v2024.0.1 or higher.
-> - [Microsoft 365 Agents Toolkit Visual Studio Code Extension](https://aka.ms/teams-toolkit) latest version or [Microsoft 365 Agents Toolkit CLI](https://aka.ms/teams-toolkit-cli).
-> - A [Microsoft 365 account for development](https://docs.microsoft.com/microsoftteams/platform/toolkit/accounts).
+1. **Resolves the user's corporate email** from the Teams roster (`TeamsChannelAccount.email`;
+   the manifest requests the `identity` permission). Falls back to `email you@endava.com` if the
+   roster lookup is unavailable. This email is the join key to the `people` table.
+2. **Registers the conversation reference** so the service can message the person proactively:
+   `POST /api/v1/conversation_ref {email, conversation_id}`.
+3. **Forwards every message** (freeform — there are no client-side commands) to
+   `POST /api/v1/chat {employee_email, text, conversation_id}` and posts the returned
+   `reply` markdown verbatim. All intent routing happens service-side; the service uses the
+   agentic graph when AWS is available and a deterministic fallback otherwise.
+4. **Delivers proactive messages** — a background loop polls
+   `GET /api/v1/notifications/pending` every 20s and, for each notification that has a
+   `conversation_id`, sends it via the Teams SDK and acks
+   `POST /api/v1/notifications/{id}/delivered`. This is how lifecycle nudges
+   (`pre_bench_greeting` → `planning_prompt` → `kickoff` → weekly `progress_check`) and the
+   `eod_report` reach people.
 
-### Configurations
-1. Open the command box and enter `Python: Create Environment` to create and activate your desired virtual environment. Remember to select `src/requirements.txt` as dependencies to install when creating the virtual environment.
+Those four endpoints are the entire contract between the bot and the service.
 
-### Conversation with bot
-1. Select the Microsoft 365 Agents Toolkit icon on the left in the VS Code toolbar.
-1. In the Account section, sign in with your [Microsoft 365 account](https://docs.microsoft.com/microsoftteams/platform/toolkit/accounts) if you haven't already.
-1. Press F5 to start debugging which launches your app in Teams using a web browser. Select `Debug in Teams (Edge)` or `Debug in Teams (Chrome)`.
-1. When Teams launches in the browser, select the Add button in the dialog to install your app to Teams.
-1. You can send any message to get a response.
+## Configuration (`.env` — copy from `.env.example`)
 
-**Congratulations**! You are running an application that can now interact with users in Teams:
+| Var | Purpose |
+|---|---|
+| `CLIENT_ID` / `CLIENT_SECRET` / `TENANT_ID` | Entra bot registration (provisioned by the M365 Agents Toolkit on F5). |
+| `BOT_TYPE` | `UserAssignedMsi` in Azure (uses Managed Identity); empty for local. |
+| `BENCH_BACKEND_URL` | The Bench service base URL (default `http://localhost:8000`). |
+| `BENCH_API_TOKEN` | Shared bearer token for `/api/v1`. Must match the service's `BENCH_API_TOKEN`. Leave empty when the service runs open (local dev). |
 
-> For local debugging using Microsoft 365 Agents Toolkit CLI, you need to do some extra steps described in [Set up your Microsoft 365 Agents Toolkit CLI for local debugging](https://aka.ms/teamsfx-cli-debugging).
+The bot has **no** AWS/Bedrock settings by design.
 
-![echo bot](https://github.com/user-attachments/assets/e0e64bdf-3982-4abf-ae5c-dfc886f0dd82)
+## Run it
 
-## What's included in the template
+> **Prerequisites:** Python ≥3.12,<3.14, the
+> [Microsoft 365 Agents Toolkit VS Code extension](https://aka.ms/teams-toolkit), and a
+> [Microsoft 365 dev account](https://docs.microsoft.com/microsoftteams/platform/toolkit/accounts).
 
-| Folder       | Contents                                            |
-| - | - |
-| `.vscode`    | VSCode files for debugging                          |
-| `appPackage` | Templates for the application manifest        |
-| `env`        | Environment files                                   |
-| `infra`      | Templates for provisioning Azure resources          |
-| `src`        | The source code for the application                 |
+1. Start the Bench service first (see `../docs/RUNBOOK.md`):
+   `BENCH_ENABLED=1 uv run --group ui --extra agentic uvicorn bench.webapp:app --reload`.
+2. In `teams-bot/`: `uv sync`, then fill `.env` (at least `BENCH_BACKEND_URL`, and
+   `BENCH_API_TOKEN` if the service sets one).
+3. `code .` and press **F5** → *Debug in Teams (Edge)* / *(Chrome)*. Add the app when Teams
+   prompts, then message the bot — it forwards to the service and the coach leads the conversation.
 
-The following files can be customized and demonstrate an example implementation to get you started.
+For a real pilot the service must be reachable from wherever the bot runs (a dev tunnel for
+local F5; App Runner / an internal ALB later). Deploying to Azure App Service uses a
+User-Assigned Managed Identity (`BOT_TYPE=UserAssignedMsi`); infra templates are under `infra/`.
 
-| File                                 | Contents                                           |
-| - | - |
-|`src/app.py`| Handles business logics for the echo bot.|
-|`src/config.py`| Defines the environment variables.|
+## Layout
 
-The following are Microsoft 365 Agents Toolkit specific project files. You can [visit a complete guide on Github](https://github.com/OfficeDev/TeamsFx/wiki/Teams-Toolkit-Visual-Studio-Code-v5-Guide#overview) to understand how Microsoft 365 Agents Toolkit works.
+| Path | Contents |
+|---|---|
+| `src/app.py` | The thin channel: email resolution, forward-to-`/chat`, proactive poll loop. |
+| `src/config.py` | Environment variables (no AWS). |
+| `appPackage/` | Teams app manifest + icons (BenchCoach / Endava MVD). |
+| `env/`, `infra/`, `m365agents*.yml` | M365 Agents Toolkit project + Azure provisioning. |
 
-| File                                 | Contents                                           |
-| - | - |
-|`m365agents.yml`|This is the main Microsoft 365 Agents Toolkit project file. The project file defines two primary things:  Properties and configuration Stage definitions. |
-|`m365agents.local.yml`|This overrides `m365agents.yml` with actions that enable local execution and debugging.|
-|`m365agents.playground.yml`|This overrides `m365agents.yml` with actions that enable local execution and debugging in Microsoft 365 Agents Playground.|
+## Known issues
 
-## Additional information and references
-
-- [Microsoft 365 Agents Toolkit Documentations](https://docs.microsoft.com/microsoftteams/platform/toolkit/teams-toolkit-fundamentals)
-- [Microsoft 365 Agents Toolkit CLI](https://aka.ms/teamsfx-toolkit-cli)
-- [Microsoft 365 Agents Toolkit Samples](https://github.com/OfficeDev/TeamsFx-Samples)
-
-## Known issue
-- If you use `Debug in Microsoft 365 Agents Playground` to local debug, you might get an error `InternalServiceError: connect ECONNREFUSED 127.0.0.1:3978` in Microsoft 365 Agents Playground console log or error message `Error: Cannot connect to your app,
-please make sure your app is running or restart your app` in log panel of Microsoft 365 Agents Playground web page. You can wait for Python launch console ready and then refresh the front end web page.
-- When you use `Launch Remote in Teams` to remote debug after deployment, you might loose interaction with your agent. This is because the remote service needs to restart. Please wait for several minutes to retry it.
+- On `Debug in Microsoft 365 Agents Playground` you may see `ECONNREFUSED 127.0.0.1:3978`
+  until the Python process is ready — wait for it, then refresh the Playground page.
+- After a remote deploy, the first interaction may lag while the service restarts.

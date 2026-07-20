@@ -105,6 +105,35 @@ def test_mark_profile_update_done_finds_employee_task(seeded):
     assert "preparar el profile" in profile_task["evidence"]
 
 
+def test_pm_cycle_queues_eod_report_to_responsible(tmp_path, monkeypatch):
+    """The daily-cycle PM run pushes the EOD report to responsibles who have talked to
+    the bot (have a conversation ref), on top of always writing the file."""
+    pytest.importorskip("langgraph")
+    import bench.tools.eod_report as eod_report_mod
+
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    monkeypatch.setattr(eod_report_mod, "REPORTS_DIR", tmp_path / "reports")
+    seed()
+
+    from bench.graph import build_graph
+    from bench.tools.catalog import load_track
+
+    start_bench("Ada Lovelace", "ada@test.com", "backend-dev", "aws-backend-track",
+                bench_start_date=date.today().isoformat())
+    responsible = load_track("aws-backend-track")["responsibles"][0]["email"]
+    save_conversation_ref(responsible, "conv-lead")
+
+    result = build_graph().invoke({"employee_email": "ada@test.com", "period": "pm",
+                                   "planned": [], "blockers": "", "task_updates": []})
+    assert responsible in result["notified_teams"]
+
+    eod = [p for p in pending_notifications() if p["kind"] == "eod_report"]
+    assert len(eod) == 1
+    assert eod[0]["email"] == responsible.lower()
+    assert eod[0]["conversation_id"] == "conv-lead"
+    assert "EOD report" in eod[0]["message"]
+
+
 def test_conversation_ref_email_case_does_not_block_delivery(seeded):
     today = date.today()
     start_bench("Pedro", "pedro.garateguy@endava.com", "backend-dev", "aws-backend-track",

@@ -13,14 +13,23 @@ Run:
 """
 from __future__ import annotations
 
+import html
 import json
 from collections import defaultdict
+from contextlib import asynccontextmanager
 
 try:
     from fastapi import FastAPI, Form, Request
     from fastapi.responses import HTMLResponse, RedirectResponse
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("The web UI needs FastAPI. Install with: uv sync --group ui") from exc
+
+
+def esc(value: object) -> str:
+    """HTML-escape any DB/user-derived value before it goes into markup (quotes too, so
+    it is safe inside attributes). The deterministic plan/report markdown rendered via
+    marked.js is a separate, intentional path and is not routed through here."""
+    return html.escape("" if value is None else str(value), quote=True)
 
 from bench.config import bench_enabled
 from bench.db import FOLLOW_UP_OPTIONS, TASK_CATEGORIES, TASK_STATUSES
@@ -39,7 +48,36 @@ from bench.tools.verify_goals import FOLLOW_UP_LABELS, verify_progress
 
 from bench.api import router as api_router
 
-app = FastAPI(title="Bench Assistant (dev UI)")
+async def _proactive_loop():
+    """Every 60s: evaluate proactive rules (pre-bench greeting, kickoff, weekly
+    progress check) and queue notifications; the bot polls and delivers them."""
+    import asyncio
+
+    from bench.notify import generate_due_notifications
+
+    while True:
+        try:
+            if bench_enabled():
+                queued = generate_due_notifications()
+                if queued:
+                    print(f"[notify] queued {queued} proactive notification(s)")
+        except Exception as exc:
+            print(f"[notify] scheduler error: {exc!r}")
+        await asyncio.sleep(60)
+
+
+@asynccontextmanager
+async def _lifespan(_app: "FastAPI"):
+    import asyncio
+
+    task = asyncio.create_task(_proactive_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(title="Bench Assistant (dev UI)", lifespan=_lifespan)
 app.include_router(api_router)  # /api/v1 — consumed by the Teams bot (ADR 0004)
 
 CATEGORY_LABELS = {
@@ -49,28 +87,6 @@ CATEGORY_LABELS = {
     "portfolio": "Workshop - LABS",
     "admin": "Admin",
 }
-
-
-@app.on_event("startup")
-async def _proactive_scheduler():
-    """Every 60s: evaluate proactive rules (pre-bench greeting, kickoff, weekly
-    progress check) and queue notifications; the bot polls and delivers them."""
-    import asyncio
-
-    from bench.notify import generate_due_notifications
-
-    async def loop():
-        while True:
-            try:
-                if bench_enabled():
-                    queued = generate_due_notifications()
-                    if queued:
-                        print(f"[notify] queued {queued} proactive notification(s)")
-            except Exception as exc:
-                print(f"[notify] scheduler error: {exc!r}")
-            await asyncio.sleep(60)
-
-    asyncio.get_event_loop().create_task(loop())
 
 _CSS = """
 :root { --ink:#1b1b25; --paper:#f7f6f3; --card:#fff; --line:#e8e6e1; --accent:#ff4a1c; --accent-dark:#d63a12; --muted:#75717a; }
@@ -135,6 +151,7 @@ def _modal(modal_id: str, button_label: str, title: str, form_html: str) -> str:
 
 
 def _page(title: str, body: str) -> HTMLResponse:
+    title = esc(title)  # body is intentional HTML; the title is always plain text
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
 <title>{title} · Bench Assistant</title>
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -195,16 +212,17 @@ def dashboard():
 
         status = computed_status(person["bench_start_date"])
         status_cls = {"active": "ok", "pre_bench": "info", "inactive": "warn"}.get(status, "warn")
-        start = person["bench_start_date"] or "—"
+        start = esc(person["bench_start_date"] or "—")
+        email = esc(person["email"])
         profile_doc = "📄" if person["profile_text"] else ""
         status_form = (
-            f'<form method="post" action="/person/{person["email"]}/date" style="white-space:nowrap">'
-            f'<input type="date" name="bench_start_date" value="{person["bench_start_date"] or ""}">'
+            f'<form method="post" action="/person/{email}/date" style="white-space:nowrap">'
+            f'<input type="date" name="bench_start_date" value="{esc(person["bench_start_date"] or "")}">'
             f' <button>Set date</button></form>')
         rows.append(
-            f'<tr><td><a href="/person/{person["email"]}">{person["name"]}</a> {profile_doc}'
-            f'<br><small>{person["email"]}</small></td>'
-            f'<td>{person["profile_id"]}<br><small>{person["track_id"]}</small></td>'
+            f'<tr><td><a href="/person/{email}">{esc(person["name"])}</a> {profile_doc}'
+            f'<br><small>{email}</small></td>'
+            f'<td>{esc(person["profile_id"])}<br><small>{esc(person["track_id"])}</small></td>'
             f'<td><span class="badge {status_cls}">{status}</span><br><small>starts {start}</small></td>'
             f'<td>{_progress_badge(verification)} {blockers}</td>'
             f'<td>{_deadline_badge(verification)}</td>'
@@ -215,11 +233,13 @@ def dashboard():
              "<th>Deadlines</th><th>Check-ins</th><th>Activation</th></tr>"
              + "".join(rows) + "</table>") \
         if rows else "<p>Nobody on bench yet. <a href='/onboard'>Onboard someone</a>.</p>"
+    from bench.notify import notification_log
+
     log_rows = "".join(
-        f"<tr><td>{n['created_at'][:16]}</td><td>{n['email']}</td>"
-        f"<td><span class='badge info'>{n['kind']}</span></td>"
+        f"<tr><td>{esc(n['created_at'][:16])}</td><td>{esc(n['email'])}</td>"
+        f"<td><span class='badge info'>{esc(n['kind'])}</span></td>"
         f"<td>{'delivered' if n['delivered_at'] else 'pending'}</td></tr>"
-        for n in __import__('bench.notify', fromlist=['notification_log']).notification_log()[:15])
+        for n in notification_log()[:15])
     log = (f'<div class="card"><h2>Proactive contact log</h2>'
            f'<table><tr><th>When</th><th>Person</th><th>Kind</th><th>Delivery</th></tr>{log_rows}</table></div>'
            if log_rows else "")
@@ -227,16 +247,16 @@ def dashboard():
 
 
 def _task_review_item(task: dict) -> str:
-    due = f'<span>due {task["due_date"]}</span>' if task["due_date"] else ""
-    evidence = (f'<div class="evidence"><b>Evidence:</b> {task["evidence"]}</div>'
+    due = f'<span>due {esc(task["due_date"])}</span>' if task["due_date"] else ""
+    evidence = (f'<div class="evidence"><b>Evidence:</b> {esc(task["evidence"])}</div>'
                 if task["evidence"] else '<div class="evidence"><small>No evidence yet.</small></div>')
-    note = (f'<div class="evidence"><b>Note:</b> {task["progress_note"]}</div>'
+    note = (f'<div class="evidence"><b>Note:</b> {esc(task["progress_note"])}</div>'
             if task["progress_note"] else "")
-    updated = f'<span>updated {task["updated_at"][:10]}</span>' if task["updated_at"] else ""
-    completed = f'<span>completed {task["completed_at"][:10]}</span>' if task["completed_at"] else ""
+    updated = f'<span>updated {esc(task["updated_at"][:10])}</span>' if task["updated_at"] else ""
+    completed = f'<span>completed {esc(task["completed_at"][:10])}</span>' if task["completed_at"] else ""
     return f"""<li>
-<div><span class="task-title">{task['title']}</span> {_status_badge(task['status'])}</div>
-<div class="task-meta"><span>follow-up {FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up'])}</span>
+<div><span class="task-title">{esc(task['title'])}</span> {_status_badge(task['status'])}</div>
+<div class="task-meta"><span>follow-up {esc(FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up']))}</span>
 {due}{updated}{completed}</div>
 {evidence}{note}
 </li>"""
@@ -277,19 +297,19 @@ def review_by_employee(email: str = ""):
     from bench.tools.state import computed_status
 
     options = "".join(
-        f'<option value="{person["email"]}" {"selected" if person["email"] == selected_email else ""}>'
-        f'{person["name"]} - {person["email"]}</option>'
+        f'<option value="{esc(person["email"])}" {"selected" if person["email"] == selected_email else ""}>'
+        f'{esc(person["name"])} - {esc(person["email"])}</option>'
         for person in people)
     selector = f"""<div class="card"><form class="review-select" method="get" action="/review">
 <label>Employee<br><select name="email" onchange="this.form.submit()">{options}</select></label>
 <button>Review</button>
-<a href="/person/{selected_email}">Open editable board</a>
+<a href="/person/{esc(selected_email)}">Open editable board</a>
 </form></div>"""
     status = computed_status(state["bench_start_date"])
     blockers = len(verification["blockers"])
     header = f"""<div class="card">
-<div class="card-head"><h2>{state['employee_name']}</h2><span class="badge info">{status}</span></div>
-<p><small>{selected_email} · {state['profile_id']} · {state['track_id']} · starts {state['bench_start_date'] or 'not set'}</small></p>
+<div class="card-head"><h2>{esc(state['employee_name'])}</h2><span class="badge info">{status}</span></div>
+<p><small>{esc(selected_email)} · {esc(state['profile_id'])} · {esc(state['track_id'])} · starts {esc(state['bench_start_date'] or 'not set')}</small></p>
 <div class="summary-grid">
 <div class="metric"><b>{verification['tasks_done']}/{verification['tasks_total']}</b><small>tasks done</small></div>
 <div class="metric"><b>{verification['touched_today']}/{verification['touched_today'] + verification['pending_today']}</b><small>touched today</small></div>
@@ -299,7 +319,7 @@ def review_by_employee(email: str = ""):
     blockers_card = ""
     if verification["blockers"]:
         blockers_card = ("<div class='card'><h2>Blockers</h2><ul>"
-                         + "".join(f"<li>{blocker}</li>" for blocker in verification["blockers"])
+                         + "".join(f"<li>{esc(blocker)}</li>" for blocker in verification["blockers"])
                          + "</ul></div>")
     return _page("Review by employee",
                  selector + header + f"<div class='card'><h2>Task tree</h2>{_review_tree(state['tasks'])}</div>"
@@ -321,9 +341,9 @@ def person_date(email: str, bench_start_date: str = Form("")):
 
 @app.get("/onboard", response_class=HTMLResponse)
 def onboard_form():
-    options_p = "".join(f'<option value="{p["id"]}">{p["name"]}</option>'
+    options_p = "".join(f'<option value="{esc(p["id"])}">{esc(p["name"])}</option>'
                         for p in catalog.list_profiles())
-    options_t = "".join(f'<option value="{t["id"]}">{t["name"]}</option>'
+    options_t = "".join(f'<option value="{esc(t["id"])}">{esc(t["name"])}</option>'
                         for t in catalog.list_tracks())
     return _page("Onboard to bench", f"""<div class="card">
 <form class="block" method="post" action="/onboard" enctype="multipart/form-data">
@@ -362,17 +382,18 @@ def _person_task_row(email: str, task: dict) -> str:
     status_options = "".join(
         f'<option value="{s}" {"selected" if s == task["status"] else ""}>{s}</option>'
         for s in TASK_STATUSES)
-    due = f'<br><small>due {task["due_date"]}</small>' if task["due_date"] else ""
-    contacts = "".join(f'<br><small>👤 {c["name"]}{" — " + c["note"] if c["note"] else ""}</small>'
-                       for c in task.get("contacts", []))
+    due = f'<br><small>due {esc(task["due_date"])}</small>' if task["due_date"] else ""
+    contacts = "".join(
+        f'<br><small>👤 {esc(c["name"])}{" — " + esc(c["note"]) if c["note"] else ""}</small>'
+        for c in task.get("contacts", []))
     evidence_hint = "required" if task["evidence_required"] else "optional"
-    return f"""<tr><td><b>{task['title']}</b><br><small>{task['description']}</small>{contacts}</td>
-<td>{task['category']}{due}</td>
-<td><small>{FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up'])}</small></td>
+    return f"""<tr><td><b>{esc(task['title'])}</b><br><small>{esc(task['description'])}</small>{contacts}</td>
+<td>{esc(task['category'])}{due}</td>
+<td><small>{esc(FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up']))}</small></td>
 <td>{_status_badge(task['status'])}</td>
-<td><form method="post" action="/person/{email}/task/{task['task_id']}">
+<td><form method="post" action="/person/{esc(email)}/task/{task['task_id']}">
 <select name="status">{status_options}</select>
-<input name="evidence" placeholder="Evidence ({evidence_hint})" value="{task['evidence']}">
+<input name="evidence" placeholder="Evidence ({evidence_hint})" value="{esc(task['evidence'])}">
 <button>Update</button></form></td></tr>"""
 
 
@@ -388,21 +409,22 @@ def person_view(email: str):
     for task in state["tasks"]:
         task["contacts"] = catalog_tasks.get(task["task_id"], {}).get("contacts", [])
     task_rows = "".join(_person_task_row(email, t) for t in state["tasks"])
+    email_url = esc(email)
 
     body = f"""
 <div class="card"><b>Today:</b> {_progress_badge(verification)} {_deadline_badge(verification)}
-&nbsp; <a href="/person/{email}/report">Generate EOD report</a></div>
+&nbsp; <a href="/person/{email_url}/report">Generate EOD report</a></div>
 <div class="card"><h2>My tasks</h2>
 <table><tr><th>Task</th><th>Category</th><th>Follow-up</th><th>Status</th><th>Update</th></tr>
 {task_rows}</table></div>
 <div class="cols">
 <div class="card"><h2>AM check-in — plan the day</h2>
-<form class="block" method="post" action="/person/{email}/checkin"><input type="hidden" name="period" value="am">
+<form class="block" method="post" action="/person/{email_url}/checkin"><input type="hidden" name="period" value="am">
 <label>What will you work on today?</label><textarea name="planned" rows="2"></textarea>
 <label>Blockers</label><input name="blockers"><button>Check in (AM)</button></form></div>
 <div class="card"><h2>PM check-in — close the day</h2>
 <p><small>Update your tasks above first; the PM check-in verifies and reports.</small></p>
-<form class="block" method="post" action="/person/{email}/checkin"><input type="hidden" name="period" value="pm">
+<form class="block" method="post" action="/person/{email_url}/checkin"><input type="hidden" name="period" value="pm">
 <label>Blockers</label><input name="blockers"><button>Check in (PM) & send EOD report</button></form></div>
 </div>
 <div class="card"><h2>Bench plan</h2>{_md(plan, "plan")}</div>"""
@@ -435,38 +457,40 @@ def person_report(email: str):
     report = build_eod_report(state, track, verification)
     path = save_eod_report(report, email, verification["date"])
     return _page("EOD report", f'<div class="card">{_md(report, "report")}'
-                               f'<p><i>Saved to {path} (simulated Teams delivery).</i></p></div>')
+                               f'<p><i>Saved to {esc(path)} (simulated Teams delivery).</i></p></div>')
 
 
 # ---------- Roles ABM ----------
 
 def _role_row(profile: dict) -> str:
-    perms = "<br>".join(f"<small><b>{k}:</b> {', '.join(v)}</small>"
+    pid = esc(profile['id'])
+    perms = "<br>".join(f"<small><b>{esc(k)}:</b> {esc(', '.join(v))}</small>"
                         for k, v in profile["permissions"].items()) or "<small>—</small>"
-    approvals = ", ".join(profile["approvals_required"]) or "—"
-    return f"""<tr id="role-{profile['id']}">
-<td><b>{profile['name']}</b><br><small>{profile['id']}</small></td>
-<td>{profile['summary']}</td><td>{perms}</td><td><small>{approvals}</small></td>
+    approvals = esc(", ".join(profile["approvals_required"])) or "—"
+    return f"""<tr id="role-{pid}">
+<td><b>{esc(profile['name'])}</b><br><small>{pid}</small></td>
+<td>{esc(profile['summary'])}</td><td>{perms}</td><td><small>{approvals}</small></td>
 <td style="white-space:nowrap">
-<button hx-get="/roles/{profile['id']}/edit" hx-target="#role-{profile['id']}" hx-swap="outerHTML">Edit</button>
-<button class="danger" hx-post="/roles/{profile['id']}/delete" hx-target="#role-{profile['id']}"
- hx-swap="outerHTML" hx-confirm="Delete role {profile['id']}?">Delete</button></td></tr>"""
+<button hx-get="/roles/{pid}/edit" hx-target="#role-{pid}" hx-swap="outerHTML">Edit</button>
+<button class="danger" hx-post="/roles/{pid}/delete" hx-target="#role-{pid}"
+ hx-swap="outerHTML" hx-confirm="Delete role {pid}?">Delete</button></td></tr>"""
 
 
 def _role_edit_row(profile: dict) -> str:
-    perms_text = "&#10;".join(f"{k}: {v}" for k, values in profile["permissions"].items()
-                              for v in values)
-    approvals_text = "&#10;".join(profile["approvals_required"])
-    return f"""<tr id="role-{profile['id']}" class="editing">
-<td colspan="5"><form hx-post="/roles/{profile['id']}" hx-target="#role-{profile['id']}" hx-swap="outerHTML">
-<b>{profile['id']}</b><br>
-<input name="name" value="{profile['name']}" placeholder="Name" style="width:30%">
-<input name="summary" value="{profile['summary']}" placeholder="Summary" style="width:60%"><br>
+    pid = esc(profile['id'])
+    perms_text = esc("\n".join(f"{k}: {v}" for k, values in profile["permissions"].items()
+                              for v in values))
+    approvals_text = esc("\n".join(profile["approvals_required"]))
+    return f"""<tr id="role-{pid}" class="editing">
+<td colspan="5"><form hx-post="/roles/{pid}" hx-target="#role-{pid}" hx-swap="outerHTML">
+<b>{pid}</b><br>
+<input name="name" value="{esc(profile['name'])}" placeholder="Name" style="width:30%">
+<input name="summary" value="{esc(profile['summary'])}" placeholder="Summary" style="width:60%"><br>
 <textarea name="permissions" rows="4" placeholder="aws: staging-read" style="width:45%">{perms_text}</textarea>
 <textarea name="approvals" rows="4" placeholder="prod-write" style="width:45%">{approvals_text}</textarea><br>
 <button>Save</button>
-<button type="button" class="ghost" hx-get="/roles/{profile['id']}/row"
- hx-target="#role-{profile['id']}" hx-swap="outerHTML">Cancel</button>
+<button type="button" class="ghost" hx-get="/roles/{pid}/row"
+ hx-target="#role-{pid}" hx-swap="outerHTML">Cancel</button>
 </form></td></tr>"""
 
 
@@ -538,7 +562,7 @@ def role_delete(profile_id: str):
         profile = catalog.load_profile(profile_id)
         row = _role_row(profile)
         return HTMLResponse(row.replace("</td></tr>",
-                                        f'<br><span class="badge bad">{exc}</span></td></tr>'))
+                                        f'<br><span class="badge bad">{esc(exc)}</span></td></tr>'))
 
 
 # ---------- Tracks ABM ----------
@@ -547,16 +571,17 @@ def role_delete(profile_id: str):
 def tracks_list():
     rows = []
     for track in catalog.list_tracks():
-        rows.append(f"""<tr id="track-{track['id']}">
-<td><a href="/tracks/{track['id']}"><b>{track['name']}</b></a><br><small>{track['id']}</small></td>
-<td>{track['duration_weeks']} weeks</td>
-<td>{', '.join(track['target_profiles']) or '—'}</td>
+        tid = esc(track['id'])
+        rows.append(f"""<tr id="track-{tid}">
+<td><a href="/tracks/{tid}"><b>{esc(track['name'])}</b></a><br><small>{tid}</small></td>
+<td>{esc(track['duration_weeks'])} weeks</td>
+<td>{esc(', '.join(track['target_profiles'])) or '—'}</td>
 <td>{len(track['tasks'])} tasks</td>
-<td><button class="danger" hx-post="/tracks/{track['id']}/delete" hx-target="#track-{track['id']}"
- hx-swap="outerHTML" hx-confirm="Delete track {track['id']} and its tasks?">Delete</button></td></tr>""")
+<td><button class="danger" hx-post="/tracks/{tid}/delete" hx-target="#track-{tid}"
+ hx-swap="outerHTML" hx-confirm="Delete track {tid} and its tasks?">Delete</button></td></tr>""")
     role_checks = "".join(
-        f'<label style="margin-right:12px"><input type="checkbox" name="profiles" value="{p["id"]}" '
-        f'style="width:auto"> {p["name"]}</label>' for p in catalog.list_profiles())
+        f'<label style="margin-right:12px"><input type="checkbox" name="profiles" value="{esc(p["id"])}" '
+        f'style="width:auto"> {esc(p["name"])}</label>' for p in catalog.list_profiles())
     new_track_form = f"""<form class="block" method="post" action="/tracks">
 <label>Id (e.g. qa-automation-track)</label><input name="track_id" required>
 <label>Name</label><input name="name" required>
@@ -584,23 +609,23 @@ def track_delete(track_id: str):
         catalog.delete_track(track_id)
         return HTMLResponse("")
     except ValueError as exc:
-        return HTMLResponse(f'<tr id="track-{track_id}"><td colspan="5">'
-                            f'<span class="badge bad">{exc}</span></td></tr>')
+        return HTMLResponse(f'<tr id="track-{esc(track_id)}"><td colspan="5">'
+                            f'<span class="badge bad">{esc(exc)}</span></td></tr>')
 
 
 def _task_row(task: dict) -> str:
     contact = task["contacts"][0] if task["contacts"] else None
-    contact_html = (f'<br><small>👤 {contact["name"]}'
-                    f'{" — " + contact["note"] if contact["note"] else ""}</small>') if contact else ""
+    contact_html = (f'<br><small>👤 {esc(contact["name"])}'
+                    f'{" — " + esc(contact["note"]) if contact["note"] else ""}</small>') if contact else ""
     return f"""<tr id="task-{task['id']}">
-<td><b>{task['title']}</b><br><small>{task['description']}</small>{contact_html}</td>
-<td>{task['category']}</td><td>{task['due_date'] or '—'}</td>
-<td>{FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up'])}</td>
-<td>{task['est_hours'] or '—'}</td><td>{'yes' if task['requires_approval'] else 'no'}</td>
+<td><b>{esc(task['title'])}</b><br><small>{esc(task['description'])}</small>{contact_html}</td>
+<td>{esc(task['category'])}</td><td>{esc(task['due_date'] or '—')}</td>
+<td>{esc(FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up']))}</td>
+<td>{esc(task['est_hours'] or '—')}</td><td>{'yes' if task['requires_approval'] else 'no'}</td>
 <td style="white-space:nowrap">
 <button hx-get="/tasks/{task['id']}/edit" hx-target="#task-{task['id']}" hx-swap="outerHTML">Edit</button>
 <button class="danger" hx-post="/tasks/{task['id']}/delete" hx-target="#task-{task['id']}"
- hx-swap="outerHTML" hx-confirm="Delete task '{task['title']}'?">Delete</button></td></tr>"""
+ hx-swap="outerHTML" hx-confirm="Delete task '{esc(task['title'])}'?">Delete</button></td></tr>"""
 
 
 def _task_edit_row(task: dict) -> str:
@@ -613,17 +638,17 @@ def _task_edit_row(task: dict) -> str:
         for f in FOLLOW_UP_OPTIONS)
     return f"""<tr id="task-{task['id']}" class="editing">
 <td colspan="7"><form hx-post="/tasks/{task['id']}" hx-target="#task-{task['id']}" hx-swap="outerHTML">
-<input name="title" value="{task['title']}" placeholder="Task" style="width:32%" required>
-<input name="description" value="{task['description']}" placeholder="Description" style="width:55%"><br>
+<input name="title" value="{esc(task['title'])}" placeholder="Task" style="width:32%" required>
+<input name="description" value="{esc(task['description'])}" placeholder="Description" style="width:55%"><br>
 <select name="category">{category_options}</select>
-<input name="due_date" type="date" value="{task['due_date'] or ''}">
+<input name="due_date" type="date" value="{esc(task['due_date'] or '')}">
 <select name="follow_up">{follow_options}</select>
-<input name="est_hours" type="number" step="0.5" value="{task['est_hours'] or ''}" placeholder="h" style="width:70px">
-<input name="link" value="{task['link']}" placeholder="Link" style="width:20%">
+<input name="est_hours" type="number" step="0.5" value="{esc(task['est_hours'] or '')}" placeholder="h" style="width:70px">
+<input name="link" value="{esc(task['link'])}" placeholder="Link" style="width:20%">
 <label style="white-space:nowrap"><input type="checkbox" name="requires_approval" style="width:auto"
  {'checked' if task['requires_approval'] else ''}> needs approval</label><br>
-<input name="contact_name" value="{contact['name']}" placeholder="Contact (optional)">
-<input name="contact_note" value="{contact['note']}" placeholder="Why this contact" style="width:40%">
+<input name="contact_name" value="{esc(contact['name'])}" placeholder="Contact (optional)">
+<input name="contact_note" value="{esc(contact['note'])}" placeholder="Why this contact" style="width:40%">
 <button>Save</button>
 <button type="button" class="ghost" hx-get="/tasks/{task['id']}/row"
  hx-target="#task-{task['id']}" hx-swap="outerHTML">Cancel</button>
@@ -631,6 +656,7 @@ def _task_edit_row(task: dict) -> str:
 
 
 def _task_modal_card(track_id: str, rows: str, category_options: str, follow_options: str) -> str:
+    track_id = esc(track_id)
     add_task_form = f"""<form class="block" method="post" action="/tracks/{track_id}/tasks">
 <label>Task</label><input name="title" required>
 <label>Description</label><input name="description">
@@ -650,6 +676,7 @@ def _task_modal_card(track_id: str, rows: str, category_options: str, follow_opt
 
 
 def _responsibles_card(track_id: str, responsibles: str) -> str:
+    track_id = esc(track_id)
     add_responsible_form = f"""<form class="block" method="post" action="/tracks/{track_id}/responsibles">
 <label>Name</label><input name="name" required>
 <label>Email</label><input name="email" type="email" required>
@@ -667,20 +694,21 @@ def track_detail(track_id: str):
     track = catalog.load_track(track_id)
     rows = "".join(_task_row(t) for t in track["tasks"])
     role_checks = "".join(
-        f'<label style="margin-right:12px"><input type="checkbox" name="profiles" value="{p["id"]}" '
-        f'style="width:auto" {"checked" if p["id"] in track["target_profiles"] else ""}> {p["name"]}</label>'
+        f'<label style="margin-right:12px"><input type="checkbox" name="profiles" value="{esc(p["id"])}" '
+        f'style="width:auto" {"checked" if p["id"] in track["target_profiles"] else ""}> {esc(p["name"])}</label>'
         for p in catalog.list_profiles())
     category_options = "".join(f'<option value="{c}">{c}</option>' for c in TASK_CATEGORIES)
     follow_options = "".join(f'<option value="{f}">{FOLLOW_UP_LABELS[f]}</option>'
                              for f in FOLLOW_UP_OPTIONS)
     responsibles = "".join(
-        f'<li id="resp-{r["id"]}">{r["name"]} &lt;{r["email"]}&gt; ({r["role"]}) '
+        f'<li id="resp-{r["id"]}">{esc(r["name"])} &lt;{esc(r["email"])}&gt; ({esc(r["role"])}) '
         f'<button class="danger" hx-post="/responsibles/{r["id"]}/delete" hx-target="#resp-{r["id"]}" '
         f'hx-swap="outerHTML">×</button></li>' for r in track["responsibles"])
+    tid = esc(track_id)
     body = f"""<div class="card"><h2>Track settings</h2>
-<form class="block" method="post" action="/tracks/{track_id}/meta">
-<label>Name</label><input name="name" value="{track['name']}">
-<label>Duration (weeks)</label><input name="duration_weeks" type="number" value="{track['duration_weeks']}">
+<form class="block" method="post" action="/tracks/{tid}/meta">
+<label>Name</label><input name="name" value="{esc(track['name'])}">
+<label>Duration (weeks)</label><input name="duration_weeks" type="number" value="{esc(track['duration_weeks'])}">
 <label>For roles</label><div>{role_checks}</div><br><button>Save settings</button></form></div>
 
 {_task_modal_card(track_id, rows, category_options, follow_options)}
@@ -762,14 +790,14 @@ def responsible_delete(responsible_id: int):
 def _knowledge_row(item: dict) -> str:
     links = []
     if item["url"]:
-        links.append('<a href="' + item["url"] + '">course</a>')
+        links.append(f'<a href="{esc(item["url"])}">course</a>')
     if item["register_url"]:
-        links.append('<a href="' + item["register_url"] + '">register completion</a>')
+        links.append(f'<a href="{esc(item["register_url"])}">register completion</a>')
     return (
-        f"<tr id='k-{item['id']}'><td><b>{item['title']}</b>"
-        f"<br><small>{item['notes']}</small></td>"
-        f"<td>{item['provider']}</td><td>{' · '.join(links) or '—'}</td>"
-        f"<td><small>{item['tags'] or 'all'}</small></td>"
+        f"<tr id='k-{item['id']}'><td><b>{esc(item['title'])}</b>"
+        f"<br><small>{esc(item['notes'])}</small></td>"
+        f"<td>{esc(item['provider'])}</td><td>{' · '.join(links) or '—'}</td>"
+        f"<td><small>{esc(item['tags'] or 'all')}</small></td>"
         f"<td style='white-space:nowrap'>"
         f"<button hx-get='/knowledge/{item['id']}/edit' hx-target='#k-{item['id']}' "
         f"hx-swap='outerHTML'>Edit</button> "
@@ -781,12 +809,12 @@ def _knowledge_row(item: dict) -> str:
 def _knowledge_edit_row(item: dict) -> str:
     return f"""<tr id="k-{item['id']}" class="editing"><td colspan="5">
 <form hx-post="/knowledge/{item['id']}" hx-target="#k-{item['id']}" hx-swap="outerHTML">
-<input name="title" value="{item['title']}" placeholder="Title" required style="width:40%">
-<input name="provider" value="{item['provider']}" placeholder="Provider" style="width:20%">
-<input name="tags" value="{item['tags']}" placeholder="Tags (aws,ai...)" style="width:20%"><br>
-<input name="url" value="{item['url']}" placeholder="Course URL" style="width:40%">
-<input name="register_url" value="{item['register_url']}" placeholder="Register-completion URL" style="width:40%"><br>
-<input name="notes" value="{item['notes']}" placeholder="Notes" style="width:70%">
+<input name="title" value="{esc(item['title'])}" placeholder="Title" required style="width:40%">
+<input name="provider" value="{esc(item['provider'])}" placeholder="Provider" style="width:20%">
+<input name="tags" value="{esc(item['tags'])}" placeholder="Tags (aws,ai...)" style="width:20%"><br>
+<input name="url" value="{esc(item['url'])}" placeholder="Course URL" style="width:40%">
+<input name="register_url" value="{esc(item['register_url'])}" placeholder="Register-completion URL" style="width:40%"><br>
+<input name="notes" value="{esc(item['notes'])}" placeholder="Notes" style="width:70%">
 <button>Save</button>
 <button type="button" class="ghost" hx-get="/knowledge/{item['id']}/row"
  hx-target="#k-{item['id']}" hx-swap="outerHTML">Cancel</button>
