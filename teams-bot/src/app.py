@@ -21,6 +21,11 @@ config = Config()
 EMAILS: dict[str, str] = {}  # conversation+user -> resolved email (ephemeral cache)
 
 
+def _auth_headers() -> dict[str, str]:
+    """Bearer header for the service API when a shared token is configured."""
+    return {"Authorization": f"Bearer {config.API_TOKEN}"} if config.API_TOKEN else {}
+
+
 def create_token_factory():
     def get_token(scopes, tenant_id=None):
         credential = ManagedIdentityCredential(client_id=config.APP_ID)
@@ -73,14 +78,16 @@ async def handle_message(ctx: ActivityContext[MessageActivity]):
 
     # Register the conversation reference so the service can message proactively.
     try:
-        async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=10) as client:
+        async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=10,
+                                     headers=_auth_headers()) as client:
             await client.post("/api/v1/conversation_ref", json={
                 "email": email, "conversation_id": ctx.activity.conversation.id})
     except httpx.HTTPError:
         pass
 
     try:
-        async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=90) as client:
+        async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=90,
+                                     headers=_auth_headers()) as client:
             response = await client.post("/api/v1/chat", json={
                 "employee_email": email,
                 "text": text,
@@ -100,7 +107,8 @@ async def proactive_loop():
     while True:
         await asyncio.sleep(20)
         try:
-            async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=30) as client:
+            async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=30,
+                                         headers=_auth_headers()) as client:
                 response = await client.get("/api/v1/notifications/pending")
                 for notification in response.json().get("notifications", []):
                     if not notification.get("conversation_id"):

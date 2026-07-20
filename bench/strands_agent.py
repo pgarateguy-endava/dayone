@@ -15,8 +15,8 @@ Requirements (not needed for the local paths):
 from __future__ import annotations
 
 import argparse
-import os
 
+from bench.config import BEDROCK_MODEL_ID, BEDROCK_REGION
 from bench.prompts import BENCH_SYSTEM_PROMPT
 from bench.tools.catalog import load_profile as _load_profile
 from bench.tools.catalog import load_track as _load_track
@@ -58,8 +58,8 @@ TOOLS = [
 
 def build_agent() -> "Agent":
     model = BedrockModel(
-        model_id=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
-        region_name=os.environ.get("AWS_REGION", "us-east-1"),
+        model_id=BEDROCK_MODEL_ID,
+        region_name=BEDROCK_REGION,
     )
     return Agent(model=model, system_prompt=BENCH_SYSTEM_PROMPT, tools=TOOLS)
 

@@ -44,28 +44,16 @@
                     ],
                     "commands": [
                         {
-                            "title": "start bench",
-                            "description": "Crear o reiniciar un plan de Bench."
-                        },
-                        {
                             "title": "plan",
-                            "description": "Ver el plan activo."
+                            "description": "Ver mi plan de Bench."
                         },
                         {
-                            "title": "checkin",
-                            "description": "Registrar avances, bloqueos y proximo foco."
+                            "title": "tareas",
+                            "description": "Ver mis tareas y su estado."
                         },
                         {
-                            "title": "summary",
-                            "description": "Ver el reporte operativo."
-                        },
-                        {
-                            "title": "bedrock status",
-                            "description": "Ver estado de la integracion con Bedrock."
-                        },
-                        {
-                            "title": "help",
-                            "description": "Ver comandos disponibles."
+                            "title": "reporte",
+                            "description": "Ver mi estado verificado del dia."
                         }
                     ]
                 }

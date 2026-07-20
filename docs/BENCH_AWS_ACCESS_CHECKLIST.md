@@ -6,9 +6,9 @@ runs locally **without** these; request them in parallel while developing.
 ## Minimum to run the real agents (Lab 2 / Bench with LLM)
 
 - [ ] AWS account access via IAM Identity Center (SSO), dev/sandbox account.
-- [ ] Region agreed with the team (default assumed: `us-east-1`).
+- [ ] Region agreed with the team (default: `us-west-2` — where model access was granted).
 - [ ] **Amazon Bedrock model access** enabled for Anthropic Claude models
-      (e.g. `anthropic.claude-3-5-sonnet-20241022-v2:0` — check current model list).
+      (default `us.anthropic.claude-sonnet-4-6` — check current model list).
 - [ ] IAM permissions: `bedrock:InvokeModel`, `bedrock:InvokeModelWithResponseStream`.
 
 ## For the accelerator / AgentCore path (Lab 3)

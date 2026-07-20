@@ -27,7 +27,7 @@ try:
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("LangGraph is required for the daily cycle: pip install langgraph") from exc
 
-from bench.config import require_bench_enabled
+from bench.config import BEDROCK_MODEL_ID, BEDROCK_REGION, require_bench_enabled
 from bench.tools.catalog import load_track
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.state import load_bench_state, record_check_in, update_task_status
@@ -49,6 +49,7 @@ class CycleState(TypedDict, total=False):
     report_md: str
     report_path: str
     notified: list[str]
+    notified_teams: list[str]
 
 
 def load_context(state: CycleState) -> dict[str, Any]:
@@ -95,9 +96,9 @@ def summarize(state: CycleState) -> dict[str, Any]:
         try:  # optional Bedrock enhancement — requires AWS credentials + model access
             import boto3
 
-            client = boto3.client("bedrock-runtime", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+            client = boto3.client("bedrock-runtime", region_name=BEDROCK_REGION)
             response = client.converse(
-                modelId=os.environ.get("BEDROCK_MODEL_ID", "anthropic.claude-3-5-sonnet-20241022-v2:0"),
+                modelId=BEDROCK_MODEL_ID,
                 messages=[{"role": "user", "content": [{"text":
                     "Write a 2-3 sentence status summary for a People Lead based only on this "
                     f"verification data (do not add facts): {verification}"}]}],
@@ -116,11 +117,20 @@ def report(state: CycleState) -> dict[str, Any]:
 
 
 def notify(state: CycleState) -> dict[str, Any]:
-    """Simulated Teams delivery: in production, post to a Teams webhook/Graph API here."""
+    """Deliver the EOD report to the track's responsibles (ADR 0004).
+
+    The durable record is always the saved file. Additionally, for each responsible who
+    has talked to the bot (has a conversation ref), queue a Teams proactive message; the
+    bot's poll loop delivers it. Responsibles without a ref fall back to file + dashboard.
+    """
+    from bench.notify import queue_notification
+
     recipients = [r["email"] for r in state["track"].get("responsibles", [])]
-    print(f"[notify] EOD report for {state['employee_email']} -> {recipients}")
-    print(f"[notify] (simulated Teams message; file: {state['report_path']})")
-    return {"notified": recipients}
+    queued = [email for email in recipients
+              if queue_notification(email, "eod_report", state["report_md"])]
+    print(f"[notify] EOD report for {state['employee_email']} -> {recipients} "
+          f"(queued to Teams: {queued or 'none'}; file: {state['report_path']})")
+    return {"notified": recipients, "notified_teams": queued}
 
 
 def _route_after_verify(state: CycleState) -> str:

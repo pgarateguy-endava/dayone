@@ -109,3 +109,14 @@ def test_chat_unknown_person_gets_onboarding_hint_not_404(client):
         "employee_email": "new@test.com", "text": "hola"})
     assert reply.status_code == 200
     assert "alta" in reply.json()["reply"]
+
+
+def test_api_token_enforced_when_set(client, monkeypatch):
+    # Unset (default) -> open: covered by every other test. Set -> bearer required.
+    monkeypatch.setenv("BENCH_API_TOKEN", "s3cret")
+    assert client.get("/api/v1/catalog").status_code == 401
+    assert client.get(
+        "/api/v1/catalog", headers={"Authorization": "Bearer nope"}).status_code == 401
+    ok = client.get("/api/v1/catalog", headers={"Authorization": "Bearer s3cret"})
+    assert ok.status_code == 200
+    assert any(p["id"] == "senior-dev" for p in ok.json()["profiles"])
