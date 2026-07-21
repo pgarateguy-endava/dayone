@@ -16,12 +16,21 @@ functions in bench/tools keep the same signatures either way.
 from __future__ import annotations
 
 import sqlite3
+import uuid
+from datetime import datetime, timezone
 
 from bench.config import PROGRESS_DIR
 
 FOLLOW_UP_OPTIONS = ("twice_daily", "daily", "weekly", "biweekly")
 TASK_CATEGORIES = ("course", "certification", "profile_update", "portfolio", "admin")
 TASK_STATUSES = ("pending", "in_progress", "done", "blocked")
+
+_MIGRATION_VERSIONS = (1, 2, 3)
+_PERSON_NAMESPACE = uuid.UUID("5a2c48ef-3c3c-4b0b-bf2d-6f1f6ea6b9a8")
+
+
+class MigrationConflictError(RuntimeError):
+    """Raised when legacy data cannot be backfilled without guessing."""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS profiles (
@@ -134,13 +143,121 @@ CREATE TABLE IF NOT EXISTS notifications (       -- daily proactive-contact log
 );
 """
 
-# columns added after the first release — applied idempotently on connect
-_MIGRATIONS = [
-    "ALTER TABLE people ADD COLUMN status TEXT NOT NULL DEFAULT 'active'",
-    "ALTER TABLE people ADD COLUMN bench_start_date TEXT",
-    "ALTER TABLE people ADD COLUMN profile_text TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE people ADD COLUMN profile_filename TEXT NOT NULL DEFAULT ''",
-]
+def normalize_email(email: str) -> str:
+    """Return the canonical email key used by the Bench API and migrations."""
+    return email.strip().lower()
+
+
+def stable_person_id(email: str) -> str:
+    """Generate the same durable identity for the same legacy person key."""
+    return str(uuid.uuid5(_PERSON_NAMESPACE, f"person:{normalize_email(email)}"))
+
+
+def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column(conn: sqlite3.Connection, table: str, definition: str) -> None:
+    name = definition.split()[0]
+    if name not in _columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+
+def _validate_backfill_conflicts(conn: sqlite3.Connection) -> None:
+    duplicate_people = conn.execute(
+        "SELECT lower(trim(email)) AS normalized, COUNT(*) AS count "
+        "FROM people GROUP BY lower(trim(email)) HAVING COUNT(*) > 1"
+    ).fetchall()
+    if duplicate_people:
+        values = ", ".join(row[0] for row in duplicate_people)
+        raise MigrationConflictError(
+            f"duplicate normalized person email(s): {values}; resolve them before migrating"
+        )
+
+    duplicate_responsibles = conn.execute(
+        "SELECT track_id, lower(trim(email)) AS normalized, COUNT(*) AS count "
+        "FROM responsibles GROUP BY track_id, lower(trim(email)) HAVING COUNT(*) > 1"
+    ).fetchall()
+    if duplicate_responsibles:
+        values = ", ".join(f"{row[0]}:{row[1]}" for row in duplicate_responsibles)
+        raise MigrationConflictError(
+            f"case-insensitive responsible conflict(s): {values}; resolve them before migrating"
+        )
+
+
+def _migration_1(conn: sqlite3.Connection) -> None:
+    """Track and complete the columns previously added ad hoc at connect time."""
+    _add_column(conn, "people", "status TEXT NOT NULL DEFAULT 'active'")
+    _add_column(conn, "people", "bench_start_date TEXT")
+    _add_column(conn, "people", "profile_text TEXT NOT NULL DEFAULT ''")
+    _add_column(conn, "people", "profile_filename TEXT NOT NULL DEFAULT ''")
+
+
+def _migration_2(conn: sqlite3.Connection) -> None:
+    """Add durable person identity links without deleting legacy email columns."""
+    _add_column(conn, "people", "person_id TEXT")
+    _add_column(conn, "people", "email_normalized TEXT")
+    for table in ("person_tasks", "check_ins", "conversation_refs", "notifications"):
+        _add_column(conn, table, "person_id TEXT")
+
+    for person in conn.execute("SELECT email FROM people").fetchall():
+        email = person[0]
+        conn.execute(
+            "UPDATE people SET person_id = ?, email_normalized = ? WHERE email = ?",
+            (stable_person_id(email), normalize_email(email), email),
+        )
+
+    for table in ("person_tasks", "check_ins", "conversation_refs", "notifications"):
+        conn.execute(
+            f"UPDATE {table} SET person_id = ("
+            "SELECT p.person_id FROM people p "
+            f"WHERE p.email_normalized = lower(trim({table}.email))"
+            f") WHERE person_id IS NULL"
+        )
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS people_person_id_idx ON people(person_id)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS people_email_normalized_idx "
+        "ON people(email_normalized)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS person_tasks_person_id_idx ON person_tasks(person_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS check_ins_person_id_idx ON check_ins(person_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS conversation_refs_person_id_idx "
+        "ON conversation_refs(person_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS notifications_person_id_idx ON notifications(person_id)"
+    )
+
+
+def _migration_3(conn: sqlite3.Connection) -> None:
+    """Separate archive state from derived date status and preserve active defaults."""
+    _add_column(conn, "people", "archived INTEGER NOT NULL DEFAULT 0")
+    _add_column(conn, "tasks", "archived INTEGER NOT NULL DEFAULT 0")
+
+
+def _run_migrations(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS schema_migrations ("
+        "version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)"
+    )
+    applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
+    _validate_backfill_conflicts(conn)
+    migrations = {1: _migration_1, 2: _migration_2, 3: _migration_3}
+    for version in _MIGRATION_VERSIONS:
+        if version in applied:
+            continue
+        with conn:
+            migrations[version](conn)
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
+                (version, datetime.now(timezone.utc).isoformat()),
+            )
 
 
 def connect() -> sqlite3.Connection:
@@ -153,10 +270,50 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(PROGRESS_DIR / "bench.db")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.executescript(_SCHEMA)
-    for migration in _MIGRATIONS:
-        try:
-            conn.execute(migration)
-        except sqlite3.OperationalError:  # column already exists
-            pass
+    try:
+        conn.executescript(_SCHEMA)
+        _run_migrations(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn
+
+
+def update_person_email(old_email: str, new_email: str) -> str:
+    """Change a person's email while retaining identity and historical links."""
+    old_key = normalize_email(old_email)
+    new_key = normalize_email(new_email)
+    if not new_key:
+        raise ValueError("email must not be empty")
+    with connect() as conn:
+        person = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (old_key,)
+        ).fetchone()
+        if person is None:
+            raise KeyError(f"No person for '{old_email}'")
+        conflict = conn.execute(
+            "SELECT 1 FROM people WHERE email_normalized = ? AND person_id != ?",
+            (new_key, person[0]),
+        ).fetchone()
+        if conflict:
+            raise MigrationConflictError(f"email already belongs to another person: {new_key}")
+        # The legacy foreign keys reference the mutable email column. Temporarily
+        # disable enforcement for this one atomic key rotation, then verify every
+        # foreign key before re-enabling it.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with conn:
+                conn.execute(
+                    "UPDATE people SET email = ?, email_normalized = ? WHERE person_id = ?",
+                    (new_key, new_key, person[0]),
+                )
+                for table in ("person_tasks", "check_ins", "conversation_refs", "notifications"):
+                    conn.execute(
+                        f"UPDATE {table} SET email = ? WHERE person_id = ?",
+                        (new_key, person[0]),
+                    )
+                if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                    raise sqlite3.IntegrityError("foreign-key check failed after email update")
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
+    return person[0]

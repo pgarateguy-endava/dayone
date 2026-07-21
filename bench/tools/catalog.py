@@ -87,9 +87,9 @@ def create_task(track_id: str, title: str, description: str = "", category: str 
                 (task_id, contact.get("name", ""), contact.get("email", ""),
                  contact.get("note", "")))
         conn.executemany(
-            "INSERT OR IGNORE INTO person_tasks (email, task_id) VALUES (?, ?)",
-            [(r["email"], task_id) for r in conn.execute(
-                "SELECT email FROM people WHERE track_id = ?", (track_id,))])
+            "INSERT OR IGNORE INTO person_tasks (person_id, email, task_id) VALUES (?, ?, ?)",
+            [(r["person_id"], r["email"], task_id) for r in conn.execute(
+                "SELECT person_id, email FROM people WHERE track_id = ?", (track_id,))])
     return task_id
 
 
