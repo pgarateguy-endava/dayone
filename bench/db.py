@@ -25,7 +25,7 @@ FOLLOW_UP_OPTIONS = ("twice_daily", "daily", "weekly", "biweekly")
 TASK_CATEGORIES = ("course", "certification", "profile_update", "portfolio", "admin")
 TASK_STATUSES = ("pending", "in_progress", "done", "blocked")
 
-_MIGRATION_VERSIONS = (1, 2, 3)
+_MIGRATION_VERSIONS = (1, 2, 3, 4)
 _PERSON_NAMESPACE = uuid.UUID("5a2c48ef-3c3c-4b0b-bf2d-6f1f6ea6b9a8")
 
 
@@ -241,6 +241,241 @@ def _migration_3(conn: sqlite3.Connection) -> None:
     _add_column(conn, "tasks", "archived INTEGER NOT NULL DEFAULT 0")
 
 
+def _require_person_links(conn: sqlite3.Connection, table: str) -> None:
+    missing = conn.execute(
+        f"SELECT 1 FROM {table} child "
+        "WHERE child.person_id IS NULL OR NOT EXISTS ("
+        "SELECT 1 FROM people p WHERE p.person_id = child.person_id"
+        ") LIMIT 1"
+    ).fetchone()
+    if missing:
+        raise MigrationConflictError(
+            f"unattributed {table} row; resolve its person email before migrating"
+        )
+
+
+def _migration_4(conn: sqlite3.Connection) -> None:
+    """Make durable identity required and remove historical email ownership."""
+    _require_person_links(conn, "person_tasks")
+    _require_person_links(conn, "check_ins")
+
+    # Stage person-owned tables without foreign keys to the old people table so
+    # people can be rebuilt with NOT NULL/check constraints in the same transaction.
+    conn.execute(
+        """CREATE TABLE person_tasks_stage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            person_id TEXT,
+            email TEXT NOT NULL,
+            task_id INTEGER NOT NULL REFERENCES tasks(id),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','in_progress','done','blocked')),
+            evidence TEXT NOT NULL DEFAULT '',
+            progress_note TEXT NOT NULL DEFAULT '',
+            updated_at TEXT,
+            completed_at TEXT,
+            UNIQUE (person_id, task_id)
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO person_tasks_stage
+            (id, person_id, email, task_id, status, evidence, progress_note,
+             updated_at, completed_at)
+            SELECT id, person_id, email, task_id, status, evidence, progress_note,
+                   updated_at, completed_at
+            FROM person_tasks"""
+    )
+    conn.execute(
+        """UPDATE person_tasks_stage
+           SET email = (SELECT email_normalized FROM people p
+                         WHERE p.person_id = person_tasks_stage.person_id)"""
+    )
+
+    conn.execute(
+        """CREATE TABLE check_ins_stage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            person_id TEXT,
+            email TEXT NOT NULL,
+            date TEXT NOT NULL,
+            period TEXT NOT NULL CHECK (period IN ('am', 'pm')),
+            planned TEXT NOT NULL DEFAULT '[]',
+            blockers TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO check_ins_stage
+            (id, person_id, email, date, period, planned, blockers, note, at)
+            SELECT id, person_id, email, date, period, planned, blockers, note, at
+            FROM check_ins"""
+    )
+    conn.execute(
+        """UPDATE check_ins_stage
+           SET email = (SELECT email_normalized FROM people p
+                         WHERE p.person_id = check_ins_stage.person_id)"""
+    )
+
+    conn.execute(
+        """CREATE TABLE conversation_refs_stage (
+            email TEXT PRIMARY KEY,
+            person_id TEXT,
+            conversation_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO conversation_refs_stage
+            (email, person_id, conversation_id, updated_at)
+            SELECT email, person_id, conversation_id, updated_at
+            FROM conversation_refs"""
+    )
+    conn.execute(
+        """CREATE TABLE notifications_stage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            person_id TEXT,
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            delivered_at TEXT
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO notifications_stage
+            (id, email, person_id, kind, message, created_at, delivered_at)
+            SELECT id, email, person_id, kind, message, created_at, delivered_at
+            FROM notifications"""
+    )
+
+    for table in ("person_tasks", "check_ins", "conversation_refs", "notifications"):
+        conn.execute(f"DROP TABLE {table}")
+    conn.execute("ALTER TABLE person_tasks_stage RENAME TO person_tasks")
+    conn.execute("ALTER TABLE check_ins_stage RENAME TO check_ins")
+    conn.execute("ALTER TABLE conversation_refs_stage RENAME TO conversation_refs")
+    conn.execute("ALTER TABLE notifications_stage RENAME TO notifications")
+
+    conn.execute(
+        """CREATE TABLE people_stage (
+            email TEXT PRIMARY KEY,
+            person_id TEXT NOT NULL UNIQUE CHECK (length(trim(person_id)) > 0),
+            email_normalized TEXT NOT NULL UNIQUE
+                CHECK (email_normalized = lower(trim(email))),
+            name TEXT NOT NULL,
+            profile_id TEXT NOT NULL REFERENCES profiles(id),
+            track_id TEXT NOT NULL REFERENCES tracks(id),
+            started_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            bench_start_date TEXT,
+            profile_text TEXT NOT NULL DEFAULT '',
+            profile_filename TEXT NOT NULL DEFAULT '',
+            archived INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO people_stage
+            (email, person_id, email_normalized, name, profile_id, track_id,
+             started_at, status, bench_start_date, profile_text, profile_filename, archived)
+            SELECT email_normalized, person_id, email_normalized, name, profile_id, track_id,
+                   started_at, status, bench_start_date, profile_text, profile_filename, archived
+            FROM people"""
+    )
+    conn.execute("DROP TABLE people")
+    conn.execute("ALTER TABLE people_stage RENAME TO people")
+
+    conn.execute(
+        """CREATE TABLE person_tasks_final (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            person_id TEXT NOT NULL REFERENCES people(person_id),
+            email TEXT NOT NULL,
+            task_id INTEGER NOT NULL REFERENCES tasks(id),
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending','in_progress','done','blocked')),
+            evidence TEXT NOT NULL DEFAULT '',
+            progress_note TEXT NOT NULL DEFAULT '',
+            updated_at TEXT,
+            completed_at TEXT,
+            UNIQUE (person_id, task_id)
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO person_tasks_final
+            (id, person_id, email, task_id, status, evidence, progress_note,
+             updated_at, completed_at)
+            SELECT id, person_id, email, task_id, status, evidence, progress_note,
+                   updated_at, completed_at
+            FROM person_tasks"""
+    )
+    conn.execute("DROP TABLE person_tasks")
+    conn.execute("ALTER TABLE person_tasks_final RENAME TO person_tasks")
+
+    conn.execute(
+        """CREATE TABLE check_ins_final (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            person_id TEXT NOT NULL REFERENCES people(person_id),
+            email TEXT NOT NULL,
+            date TEXT NOT NULL,
+            period TEXT NOT NULL CHECK (period IN ('am', 'pm')),
+            planned TEXT NOT NULL DEFAULT '[]',
+            blockers TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO check_ins_final
+            (id, person_id, email, date, period, planned, blockers, note, at)
+            SELECT id, person_id, email, date, period, planned, blockers, note, at
+            FROM check_ins"""
+    )
+    conn.execute("DROP TABLE check_ins")
+    conn.execute("ALTER TABLE check_ins_final RENAME TO check_ins")
+
+    conn.execute(
+        """CREATE TABLE conversation_refs_final (
+            email TEXT PRIMARY KEY,
+            person_id TEXT REFERENCES people(person_id),
+            conversation_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO conversation_refs_final
+            (email, person_id, conversation_id, updated_at)
+            SELECT email, person_id, conversation_id, updated_at
+            FROM conversation_refs"""
+    )
+    conn.execute("DROP TABLE conversation_refs")
+    conn.execute("ALTER TABLE conversation_refs_final RENAME TO conversation_refs")
+
+    conn.execute(
+        """CREATE TABLE notifications_final (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            person_id TEXT REFERENCES people(person_id),
+            kind TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            delivered_at TEXT
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO notifications_final
+            (id, email, person_id, kind, message, created_at, delivered_at)
+            SELECT id, email, person_id, kind, message, created_at, delivered_at
+            FROM notifications"""
+    )
+    conn.execute("DROP TABLE notifications")
+    conn.execute("ALTER TABLE notifications_final RENAME TO notifications")
+    conn.execute(
+        "CREATE INDEX person_tasks_person_id_idx ON person_tasks(person_id)"
+    )
+    conn.execute("CREATE INDEX check_ins_person_id_idx ON check_ins(person_id)")
+    conn.execute(
+        "CREATE INDEX conversation_refs_person_id_idx ON conversation_refs(person_id)"
+    )
+    conn.execute("CREATE INDEX notifications_person_id_idx ON notifications(person_id)")
+
+
 def _run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
@@ -248,7 +483,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     )
     applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
     _validate_backfill_conflicts(conn)
-    migrations = {1: _migration_1, 2: _migration_2, 3: _migration_3}
+    migrations = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4}
     for version in _MIGRATION_VERSIONS:
         if version in applied:
             continue
@@ -258,6 +493,9 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
                 "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
                 (version, datetime.now(timezone.utc).isoformat()),
             )
+    violation = conn.execute("PRAGMA foreign_key_check").fetchone()
+    if violation is not None:
+        raise sqlite3.IntegrityError(f"foreign-key check failed: {tuple(violation)}")
 
 
 def connect() -> sqlite3.Connection:
@@ -297,23 +535,25 @@ def update_person_email(old_email: str, new_email: str) -> str:
         ).fetchone()
         if conflict:
             raise MigrationConflictError(f"email already belongs to another person: {new_key}")
-        # The legacy foreign keys reference the mutable email column. Temporarily
-        # disable enforcement for this one atomic key rotation, then verify every
-        # foreign key before re-enabling it.
-        conn.execute("PRAGMA foreign_keys = OFF")
-        try:
-            with conn:
+        conversation_conflict = conn.execute(
+            "SELECT 1 FROM conversation_refs "
+            "WHERE lower(trim(email)) = ? AND (person_id IS NULL OR person_id != ?)",
+            (new_key, person[0]),
+        ).fetchone()
+        if conversation_conflict:
+            raise MigrationConflictError(
+                f"email conflicts with an existing conversation reference: {new_key}"
+            )
+        with conn:
+            conn.execute(
+                "UPDATE people SET email = ?, email_normalized = ? WHERE person_id = ?",
+                (new_key, new_key, person[0]),
+            )
+            for table in ("person_tasks", "check_ins", "conversation_refs", "notifications"):
                 conn.execute(
-                    "UPDATE people SET email = ?, email_normalized = ? WHERE person_id = ?",
-                    (new_key, new_key, person[0]),
+                    f"UPDATE {table} SET email = ? WHERE person_id = ?",
+                    (new_key, person[0]),
                 )
-                for table in ("person_tasks", "check_ins", "conversation_refs", "notifications"):
-                    conn.execute(
-                        f"UPDATE {table} SET email = ? WHERE person_id = ?",
-                        (new_key, person[0]),
-                    )
-                if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
-                    raise sqlite3.IntegrityError("foreign-key check failed after email update")
-        finally:
-            conn.execute("PRAGMA foreign_keys = ON")
+            if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+                raise sqlite3.IntegrityError("foreign-key check failed after email update")
     return person[0]

@@ -140,7 +140,7 @@ GPT-5 Codex
 
 ### Implementation Plan
 
-- Replace swallowed connect-time `ALTER TABLE` statements with three ordered migrations recorded in `schema_migrations`.
+- Replace swallowed connect-time `ALTER TABLE` statements with four ordered migrations recorded in `schema_migrations`.
 - Backfill deterministic UUID5 person identities, normalized email keys, durable history links, and archive defaults after validating person/responsible conflicts.
 - Keep legacy email columns and existing tool contracts compatible while new writes populate `person_id`; expose an atomic email-update seam that preserves history.
 - Cover legacy/current/repeat/conflict/email-edit paths and run the complete `uv run pytest` suite.
@@ -153,7 +153,8 @@ GPT-5 Codex
 - Added normalized/editable email support, conflict fail-closed validation, separate people/task archive flags, and compatibility writes for new records.
 - Added migration regression coverage for backfill, history preservation, idempotency, email edits, and responsible/person conflicts.
 - Senior review fixes: durable links for knowledge-materialized tasks, normalized person-ID state lookups, and safe unknown-person notification handling.
-- Validation: `uv run pytest` → 23 passed, 2 skipped; `git diff --check` passed.
+- Additional review fixes: required person identity constraints/foreign keys, email-owner decoupling, actionable conversation-reference conflicts, and normalized identity checks.
+- Validation: `uv run pytest` → 25 passed, 2 skipped; `git diff --check` passed.
 
 ### File List
 
@@ -169,3 +170,4 @@ GPT-5 Codex
 
 - 2026-07-21: Implemented versioned schema migrations, durable identity/history backfill, lifecycle/archive fields, normalized email editing, and regression tests; status advanced to review.
 - 2026-07-21: Completed senior code review; fixed three durable-identity and notification-safety findings and expanded regression coverage.
+- 2026-07-21: Addressed adversarial review findings for durable constraints, email-edit conflict handling, and non-null normalized identity.

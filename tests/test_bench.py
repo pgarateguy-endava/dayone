@@ -69,7 +69,7 @@ def test_legacy_schema_is_backfilled_with_durable_identity_and_history(tmp_path,
             assert row["person_id"] == person["person_id"]
         assert conn.execute("SELECT archived FROM tasks WHERE id = 1").fetchone()[0] == 0
         versions = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
-        assert [row[0] for row in versions] == [1, 2, 3]
+        assert [row[0] for row in versions] == [1, 2, 3, 4]
 
 
 def test_migration_is_idempotent_and_preserves_stable_id(tmp_path, monkeypatch):
@@ -79,7 +79,7 @@ def test_migration_is_idempotent_and_preserves_stable_id(tmp_path, monkeypatch):
         person_id = conn.execute("SELECT person_id FROM people").fetchone()[0]
     with db_mod.connect() as conn:
         assert conn.execute("SELECT person_id FROM people").fetchone()[0] == person_id
-        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 3
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
 
 
 def test_duplicate_normalized_people_fail_before_backfill(tmp_path, monkeypatch):
@@ -109,6 +109,44 @@ def test_email_edit_keeps_person_id_and_history_attribution(tmp_path, monkeypatc
         assert person["person_id"] == person_id
         assert conn.execute("SELECT email, person_id FROM check_ins").fetchone()[0] == "ada.new@test.com"
         assert conn.execute("SELECT person_id FROM person_tasks").fetchone()[0] == person_id
+
+
+def test_migrated_person_relationships_require_durable_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db")
+
+    with db_mod.connect() as conn:
+        people_columns = {row[1]: row for row in conn.execute("PRAGMA table_info(people)")}
+        person_tasks_columns = {
+            row[1]: row for row in conn.execute("PRAGMA table_info(person_tasks)")
+        }
+        check_in_columns = {row[1]: row for row in conn.execute("PRAGMA table_info(check_ins)")}
+        assert people_columns["person_id"][3] == 1
+        assert people_columns["email_normalized"][3] == 1
+        assert person_tasks_columns["person_id"][3] == 1
+        assert check_in_columns["person_id"][3] == 1
+        assert any(row[2] == "people" and row[3] == "person_id" for row in conn.execute(
+            "PRAGMA foreign_key_list(person_tasks)"
+        ))
+        assert any(row[2] == "people" and row[3] == "person_id" for row in conn.execute(
+            "PRAGMA foreign_key_list(check_ins)"
+        ))
+
+
+def test_email_edit_conflict_with_existing_conversation_is_actionable(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db")
+    with db_mod.connect() as conn:
+        conn.execute(
+            "INSERT INTO conversation_refs (email, conversation_id, updated_at) "
+            "VALUES ('new@example.com', 'responsible-conv', 'now')"
+        )
+
+    with pytest.raises(db_mod.MigrationConflictError, match="conversation reference"):
+        db_mod.update_person_email("ada@test.com", "new@example.com")
+
+    with db_mod.connect() as conn:
+        assert conn.execute("SELECT email FROM people").fetchone()[0] == "ada@test.com"
 
 
 def test_case_insensitive_responsible_conflict_fails_closed(tmp_path, monkeypatch):
