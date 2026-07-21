@@ -213,6 +213,46 @@ def test_create_task_backfills_people_on_bench(seeded_db):
     assert len(state["tasks"]) == 10  # new catalog task instantiated for Ada too
 
 
+def test_materialized_knowledge_task_keeps_durable_person_link(seeded_db):
+    start_bench("Ada", "ada@test.com", "backend-dev", "aws-backend-track")
+    with db_mod.connect() as conn:
+        task_id = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'Claude Partner Network Learning Path'"
+        ).fetchone()[0]
+        conn.execute("DELETE FROM person_tasks WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    mark_task_done_by_title("ada@test.com", "Claude Partner Network Learning Path")
+
+    with db_mod.connect() as conn:
+        row = conn.execute(
+            "SELECT pt.person_id, pt.status FROM person_tasks pt "
+            "JOIN tasks t ON t.id = pt.task_id "
+            "WHERE pt.email = 'ada@test.com' AND t.title = 'Claude Partner Network Learning Path'"
+        ).fetchone()
+        person_id = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = 'ada@test.com'"
+        ).fetchone()[0]
+    assert row["person_id"] == person_id
+    assert row["status"] == "done"
+
+
+def test_unknown_person_start_date_does_not_clear_legacy_notifications(seeded_db):
+    with db_mod.connect() as conn:
+        conn.execute(
+            "INSERT INTO notifications (email, kind, message, created_at) "
+            "VALUES ('lead@example.com', 'eod_report', 'keep', 'now')"
+        )
+
+    from bench.tools.state import set_bench_start_date
+    set_bench_start_date("unknown@example.com", "2026-07-21")
+
+    with db_mod.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE email = 'lead@example.com'"
+        ).fetchone()[0] == 1
+
+
 def test_daily_cycle_graph_pm_produces_report(seeded_db):
     pytest.importorskip("langgraph")
     from bench.graph import build_graph

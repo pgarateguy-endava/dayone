@@ -59,8 +59,8 @@ def start_bench(employee_name: str, employee_email: str, profile_id: str, track_
             "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
         ).fetchone()
         person_id = existing["person_id"] if existing else stable_person_id(employee_email)
-        conn.execute("DELETE FROM check_ins WHERE email = ?", (employee_email,))
-        conn.execute("DELETE FROM person_tasks WHERE email = ?", (employee_email,))
+        conn.execute("DELETE FROM check_ins WHERE person_id = ?", (person_id,))
+        conn.execute("DELETE FROM person_tasks WHERE person_id = ?", (person_id,))
         if existing:
             conn.execute(
                 "UPDATE people SET name = ?, profile_id = ?, track_id = ?, started_at = ?, "
@@ -131,17 +131,21 @@ def update_task_status(employee_email: str, task_id: int, status: str,
     """
     if status not in TASK_STATUSES:
         raise ValueError(f"status must be one of {TASK_STATUSES}")
+    employee_email = normalize_email(employee_email)
     now = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
+        person = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
+        ).fetchone()
         updated = conn.execute(
             "UPDATE person_tasks SET status = ?, "
             "evidence = CASE WHEN ? != '' THEN ? ELSE evidence END, "
             "progress_note = CASE WHEN ? != '' THEN ? ELSE progress_note END, "
             "updated_at = ?, "
             "completed_at = CASE WHEN ? = 'done' THEN ? ELSE NULL END "
-            "WHERE email = ? AND task_id = ?",
+            "WHERE person_id = ? AND task_id = ?",
             (status, evidence, evidence, note, note, now, status, now,
-             employee_email, task_id)).rowcount
+             person["person_id"] if person else None, task_id)).rowcount
         if not updated:
             raise KeyError(f"Task {task_id} is not assigned to {employee_email}")
     return {"task_id": task_id, "status": status, "evidence": evidence,
@@ -154,11 +158,14 @@ def mark_profile_update_done(employee_email: str, evidence: str = "", note: str 
     The agent should not guess task ids for this common pre-bench intent; this helper
     deterministically finds the person's `profile_update` task instance.
     """
+    employee_email = normalize_email(employee_email)
     with connect() as conn:
         task = conn.execute(
             """SELECT pt.task_id, t.title
                FROM person_tasks pt JOIN tasks t ON t.id = pt.task_id
-               WHERE pt.email = ? AND t.category = 'profile_update'
+               WHERE pt.person_id = (
+                   SELECT person_id FROM people WHERE email_normalized = ?
+               ) AND t.category = 'profile_update'
                ORDER BY t.sort, t.id
                LIMIT 1""",
             (employee_email,)).fetchone()
@@ -175,10 +182,13 @@ def mark_profile_update_done(employee_email: str, evidence: str = "", note: str 
 
 
 def _find_assigned_task_by_title(conn, employee_email: str, title_query: str):
+    employee_email = normalize_email(employee_email)
     tasks = conn.execute(
         """SELECT pt.task_id, t.title
            FROM person_tasks pt JOIN tasks t ON t.id = pt.task_id
-           WHERE pt.email = ?
+           WHERE pt.person_id = (
+               SELECT person_id FROM people WHERE email_normalized = ?
+           )
            ORDER BY t.sort, t.id""",
         (employee_email,)).fetchall()
     for task in tasks:
@@ -191,7 +201,10 @@ def _find_assigned_task_by_title(conn, employee_email: str, title_query: str):
 
 
 def _ensure_mandatory_task_from_knowledge(conn, employee_email: str, title_query: str):
-    person = conn.execute("SELECT * FROM people WHERE email = ?", (employee_email,)).fetchone()
+    employee_email = normalize_email(employee_email)
+    person = conn.execute(
+        "SELECT * FROM people WHERE email_normalized = ?", (employee_email,)
+    ).fetchone()
     if person is None:
         raise FileNotFoundError(f"No bench state for '{employee_email}'.")
     mandatory = conn.execute(
@@ -222,8 +235,8 @@ def _ensure_mandatory_task_from_knowledge(conn, employee_email: str, title_query
         title = task["title"]
 
     conn.execute(
-        "INSERT OR IGNORE INTO person_tasks (email, task_id) VALUES (?, ?)",
-        (employee_email, task_id))
+        "INSERT OR IGNORE INTO person_tasks (person_id, email, task_id) VALUES (?, ?, ?)",
+        (person["person_id"], employee_email, task_id))
     return {"task_id": task_id, "title": title}
 
 
@@ -235,6 +248,7 @@ def mark_task_done_by_title(employee_email: str, title_query: str,
     mandatory course exists only in the knowledge grid, it is materialized into the
     person's track before being marked done.
     """
+    employee_email = normalize_email(employee_email)
     with connect() as conn:
         task = _find_assigned_task_by_title(conn, employee_email, title_query)
         if task is None:
@@ -282,10 +296,21 @@ def record_check_in(employee_email: str, period: str, planned: list[str] | None 
 def set_bench_start_date(employee_email: str, bench_start_date: str | None) -> None:
     """THE activation trigger: changing the date recomputes the status and clears the
     person's notification history so the proactive rules re-fire. (Write)"""
+    employee_email = normalize_email(employee_email)
     with connect() as conn:
-        conn.execute("UPDATE people SET bench_start_date = ?, status = ? WHERE email = ?",
-                     (bench_start_date, computed_status(bench_start_date), employee_email))
-        conn.execute("DELETE FROM notifications WHERE email = ?", (employee_email,))
+        person = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
+        ).fetchone()
+        if person is None:
+            return
+        conn.execute(
+            "UPDATE people SET bench_start_date = ?, status = ? WHERE person_id = ?",
+            (bench_start_date, computed_status(bench_start_date), person["person_id"]),
+        )
+        conn.execute(
+            "DELETE FROM notifications WHERE person_id = ?",
+            (person["person_id"],),
+        )
 
 
 def list_bench_people() -> list[dict[str, Any]]:

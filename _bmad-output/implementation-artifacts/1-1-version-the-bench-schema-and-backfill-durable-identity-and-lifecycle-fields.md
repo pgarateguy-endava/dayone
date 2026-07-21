@@ -152,7 +152,8 @@ GPT-5 Codex
 - Backfilled deterministic `person_id` values and durable links for people, tasks, check-ins, conversation references, and person-owned notifications.
 - Added normalized/editable email support, conflict fail-closed validation, separate people/task archive flags, and compatibility writes for new records.
 - Added migration regression coverage for backfill, history preservation, idempotency, email edits, and responsible/person conflicts.
-- Validation: `uv run pytest` → 21 passed, 2 skipped; `git diff --check` passed.
+- Senior review fixes: durable links for knowledge-materialized tasks, normalized person-ID state lookups, and safe unknown-person notification handling.
+- Validation: `uv run pytest` → 23 passed, 2 skipped; `git diff --check` passed.
 
 ### File List
 
@@ -167,3 +168,4 @@ GPT-5 Codex
 ### Change Log
 
 - 2026-07-21: Implemented versioned schema migrations, durable identity/history backfill, lifecycle/archive fields, normalized email editing, and regression tests; status advanced to review.
+- 2026-07-21: Completed senior code review; fixed three durable-identity and notification-safety findings and expanded regression coverage.
