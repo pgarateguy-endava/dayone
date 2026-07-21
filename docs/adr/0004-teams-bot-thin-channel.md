@@ -44,3 +44,11 @@ The bot is a **thin channel adapter**; the Bench service is the only brain.
 - The service must be reachable from the bot (localhost in dev; App Runner/ALB later).
 - Secrets hygiene: the bot's `.env` (Entra CLIENT_SECRET) stays out of git; the copied
   `teams-bot/` ships an `.env.example` only.
+
+## UI completion amendment (2026-07-20)
+
+Actor context, lifecycle rules, audit records, report metadata, and notification status remain owned
+by the Bench service and shared tools. The web UI and Teams adapter do not interpret channel-local
+delivery as domain state. Report save, notification queued/pending, delivered, and failed outcomes are
+independent projections; a Teams message cannot imply access provisioning or report delivery until the
+service records that outcome.

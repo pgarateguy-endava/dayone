@@ -1,5 +1,19 @@
 # Target architecture
 
+## Bench local architecture amendment (2026-07-20)
+
+The Bench domain is distinct from the older YAML onboarding sketch below. Bench catalog and state use
+SQLite as the local source of truth behind `bench/tools`; FastAPI/htmx, JSON API, Teams, CLI, and
+scheduled flows are thin channels over those seams. The localhost MVP uses simulated permissions and
+the explicit `BENCH_ACTOR` context with visible `local-operator` fallback. It is not a hosted or
+employee-facing backoffice.
+
+Bench lifecycle, audit, report metadata, and notification state are durable domain facts. Successful
+mutations and their audit records commit atomically. A stable `person_id` owns history while email is
+editable. Reports remain file-backed for the MVP, with SQLite metadata and recipient snapshots; saved,
+queued/pending, delivered, and failed notification states remain independent. A later DynamoDB/API
+path replaces storage behind the tool seam without moving persistence or business rules into channels.
+
 ## Local MVP
 
 The local MVP uses YAML files and Python tools to teach the pattern:

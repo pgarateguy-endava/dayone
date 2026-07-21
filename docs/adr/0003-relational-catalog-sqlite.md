@@ -37,3 +37,15 @@ keeps its YAML — that material belongs to `main`.
   access-definition changes in production (audit trail moves to the DB / DynamoDB streams).
 - The DynamoDB migration path is table-per-table instead of file-per-file; function
   signatures in `bench/tools/` remain the swap seam.
+
+## UI completion amendment (2026-07-20)
+
+SQLite also owns explicit person lifecycle/archive state, stable `person_id` identity, append-only
+audit records, durable report metadata, and independent notification projections. Email is an editable
+attribute rather than the durable person key. Successful mutations and their audit records commit
+atomically. Versioned migrations must backfill existing data and fail closed on unresolved identity or
+uniqueness conflicts.
+
+Catalog safety is history-aware: a task with any historical person instance is archived/inactivated,
+not physically deleted; archived task instances remain readable. Archived people preserve tasks,
+check-ins, reports, notifications, and audit history and continue to block role/track deletion.

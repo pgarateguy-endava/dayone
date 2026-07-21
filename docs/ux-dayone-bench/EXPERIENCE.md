@@ -170,6 +170,15 @@ separate mobile information architecture.
 - The localhost trust boundary is visible in the runbook and deployment posture; this UI must not be
   exposed as a shared employee-facing service.
 
+## UI completion amendments
+
+- The visible operator context shows the resolved `BENCH_ACTOR`; `local-operator` is the fallback.
+- Person identity is stable by `person_id`; email is editable without rewriting task, report, notification, conversation, or audit history.
+- Archived people remain visible through an explicit archived surface and continue to block role/track deletion while historical references exist.
+- Archived task instances remain visible in person history and reports with an explicit archived label.
+- Reports remain file-backed for this MVP, with saved metadata and recipient snapshots shown outside read-only Markdown.
+- Notification projections distinguish queued, pending, delivered, and failed outcomes; simulated approval uses only `not_required`, `approval_required`, and `pending_simulated`.
+
 ## Key Flows
 
 ### Flow 1 — Start a bench assignment (Laura, People Lead, Monday morning)
