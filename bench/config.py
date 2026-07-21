@@ -25,6 +25,29 @@ def api_token() -> str | None:
     return os.environ.get("BENCH_API_TOKEN") or None
 
 
+# --- AWS integrations (consumed from local; each has a local fallback) ---
+
+def storage_backend() -> str:
+    """Per-person state store: 'dynamodb' when BENCH_STORAGE=dynamodb, else 'sqlite'.
+    Read at call time so tests can flip it. The catalog always stays in SQLite."""
+    return "dynamodb" if os.environ.get("BENCH_STORAGE", "").lower() == "dynamodb" else "sqlite"
+
+
+def docs_s3_bucket() -> str | None:
+    """When set (BENCH_DOCS_S3_BUCKET), EOD reports and profile PDFs go to S3;
+    otherwise they stay on local disk. Read at call time."""
+    return os.environ.get("BENCH_DOCS_S3_BUCKET") or None
+
+
+def dynamodb_table_prefix() -> str:
+    """Prefix for the per-person DynamoDB tables (default 'bench')."""
+    return os.environ.get("BENCH_DYNAMODB_PREFIX", "bench")
+
+
+def aws_region() -> str:
+    return os.environ.get("AWS_REGION", BEDROCK_REGION)
+
+
 def bench_enabled() -> bool:
     """Feature flag: the Bench domain is opt-in (BENCH_ENABLED=1)."""
     return os.environ.get("BENCH_ENABLED", "0").lower() in ("1", "true", "yes")

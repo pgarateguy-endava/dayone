@@ -67,8 +67,9 @@ def build_eod_report(
 
 
 def save_eod_report(report_md: str, employee_email: str, on_date: str) -> str:
-    """Write the report to .local-progress/reports/ and return its path. (Write tool)"""
-    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-    path = Path(REPORTS_DIR) / f"{on_date}_{employee_email.replace('@', '_at_')}.md"
-    path.write_text(report_md, encoding="utf-8")
-    return str(path)
+    """Store the EOD report. Local disk by default, or S3 when BENCH_DOCS_S3_BUCKET is
+    set (bench/docstore). Returns a local path or an s3:// URI. (Write tool)"""
+    from bench.docstore import put_report
+
+    filename = f"{on_date}_{employee_email.replace('@', '_at_')}.md"
+    return put_report(filename, report_md)

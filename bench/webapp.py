@@ -363,13 +363,16 @@ heads-up; today/past = active, kickoff message)</label>
 async def onboard(request: Request):
     form = await request.form()
     profile_text, profile_filename = "", ""
+    email = str(form["email"]).strip()
     upload = form.get("profile_pdf")
     if upload is not None and getattr(upload, "filename", ""):
+        from bench.docstore import put_profile_pdf
         from bench.tools.profile_pdf import extract_pdf_text
 
-        profile_text = extract_pdf_text(await upload.read())
+        data = await upload.read()
+        profile_text = extract_pdf_text(data)
         profile_filename = upload.filename
-    email = str(form["email"]).strip()
+        put_profile_pdf(email, data, upload.filename)  # local disk or S3 per config
     start_bench(str(form["employee"]).strip(), email, str(form["profile"]), str(form["track"]),
                 bench_start_date=str(form.get("bench_start_date") or "") or None,
                 profile_text=profile_text, profile_filename=profile_filename)
