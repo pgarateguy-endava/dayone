@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
+from bench.config import storage_backend
 from bench.db import connect
 from bench.tools.catalog import load_track
 from bench.tools.knowledge import suggest_for_profile
@@ -28,6 +29,11 @@ def _email_key(email: str) -> str:
     return email.strip().lower()
 
 
+def _dynamo() -> bool:
+    """Notification/conversation state on DynamoDB when BENCH_STORAGE=dynamodb."""
+    return storage_backend() == "dynamodb"
+
+
 def _first_name(name: str) -> str:
     return name.split()[0] if name.split() else name
 
@@ -37,6 +43,11 @@ def _days_label(days: int) -> str:
 
 
 def save_conversation_ref(email: str, conversation_id: str) -> None:
+    if _dynamo():
+        from bench import dynamo
+
+        dynamo.save_conversation_ref(_email_key(email), conversation_id)
+        return
     with connect() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO conversation_refs (email, conversation_id, updated_at) "
@@ -46,6 +57,10 @@ def save_conversation_ref(email: str, conversation_id: str) -> None:
 
 def has_conversation_ref(email: str) -> bool:
     """True if this person has ever talked to the bot (so a proactive push can land)."""
+    if _dynamo():
+        from bench import dynamo
+
+        return dynamo.has_conversation_ref(_email_key(email))
     with connect() as conn:
         return conn.execute(
             "SELECT 1 FROM conversation_refs WHERE lower(email) = lower(?) LIMIT 1",
@@ -58,30 +73,45 @@ def queue_notification(email: str, kind: str, message: str) -> bool:
     queued. Used by the daily cycle to push EOD reports to responsibles (ADR 0004)."""
     if not has_conversation_ref(email):
         return False
-    with connect() as conn:
-        _queue(conn, email, kind, message)
+    _enqueue(_email_key(email), kind, message)
     return True
 
 
-def _already_sent(conn, email: str, kind: str, since_days: int | None = None) -> bool:
+def _enqueue(email: str, kind: str, message: str) -> None:
+    if _dynamo():
+        from bench import dynamo
+
+        dynamo.queue_notification(_email_key(email), kind, message)
+        return
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO notifications (email, kind, message, created_at) VALUES (?, ?, ?, ?)",
+            (_email_key(email), kind, message, datetime.now(timezone.utc).isoformat()))
+
+
+def _sent(email: str, kind: str, since_days: int | None = None) -> bool:
+    if _dynamo():
+        from bench import dynamo
+
+        return dynamo.already_sent(_email_key(email), kind, since_days)
     query = "SELECT COUNT(*) FROM notifications WHERE email = ? AND kind = ?"
     params: list = [_email_key(email), kind]
     if since_days is not None:
         query += " AND created_at >= date('now', ?)"
         params.append(f"-{since_days} days")
-    return conn.execute(query, params).fetchone()[0] > 0
+    with connect() as conn:
+        return conn.execute(query, params).fetchone()[0] > 0
 
 
-def _delivered(conn, email: str, kind: str) -> bool:
-    return conn.execute(
-        "SELECT COUNT(*) FROM notifications WHERE email = ? AND kind = ? "
-        "AND delivered_at IS NOT NULL", (_email_key(email), kind)).fetchone()[0] > 0
+def _was_delivered(email: str, kind: str) -> bool:
+    if _dynamo():
+        from bench import dynamo
 
-
-def _queue(conn, email: str, kind: str, message: str) -> None:
-    conn.execute(
-        "INSERT INTO notifications (email, kind, message, created_at) VALUES (?, ?, ?, ?)",
-        (_email_key(email), kind, message, datetime.now(timezone.utc).isoformat()))
+        return dynamo.delivered(_email_key(email), kind)
+    with connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE email = ? AND kind = ? "
+            "AND delivered_at IS NOT NULL", (_email_key(email), kind)).fetchone()[0] > 0
 
 
 def _fmt_items(items: list[dict]) -> str:
@@ -142,37 +172,40 @@ def generate_due_notifications(today: str | None = None) -> int:
     queued = 0
     from bench.tools.state import computed_status
 
-    with connect() as conn:
-        for person in list_bench_people():
-            email = person["email"]
-            start = person["bench_start_date"]
-            status = computed_status(start, today_d.isoformat())
-            start_d = date.fromisoformat(start) if start else None
-            days_until_start = (start_d - today_d).days if start_d else None
-            if status == "pre_bench" and days_until_start is not None:
-                if days_until_start == 1 and not _already_sent(conn, email, "planning_prompt"):
-                    _queue(conn, email, "planning_prompt", _planning_prompt_message(person))
-                    queued += 1
-                elif (1 < days_until_start <= PROFILE_PREP_WINDOW_DAYS
-                      and not _already_sent(conn, email, "pre_bench_greeting")):
-                    _queue(conn, email, "pre_bench_greeting",
-                           _profile_prep_message(person, days_until_start))
-                    queued += 1
-            if status == "active" and (start_d is None or start_d <= today_d):
-                if not _already_sent(conn, email, "kickoff"):
-                    _queue(conn, email, "kickoff", _kickoff_message(load_bench_state(email)))
-                    queued += 1
-                elif (start_d and (today_d - start_d).days >= 7
-                      and _delivered(conn, email, "kickoff")  # follow-up only after kickoff landed
-                      and not _already_sent(conn, email, "progress_check", since_days=7)):
-                    _queue(conn, email, "progress_check",
-                           _progress_message(load_bench_state(email)))
-                    queued += 1
+    for person in list_bench_people():
+        email = person["email"]
+        start = person["bench_start_date"]
+        status = computed_status(start, today_d.isoformat())
+        start_d = date.fromisoformat(start) if start else None
+        days_until_start = (start_d - today_d).days if start_d else None
+        if status == "pre_bench" and days_until_start is not None:
+            if days_until_start == 1 and not _sent(email, "planning_prompt"):
+                _enqueue(email, "planning_prompt", _planning_prompt_message(person))
+                queued += 1
+            elif (1 < days_until_start <= PROFILE_PREP_WINDOW_DAYS
+                  and not _sent(email, "pre_bench_greeting")):
+                _enqueue(email, "pre_bench_greeting",
+                         _profile_prep_message(person, days_until_start))
+                queued += 1
+        if status == "active" and (start_d is None or start_d <= today_d):
+            if not _sent(email, "kickoff"):
+                _enqueue(email, "kickoff", _kickoff_message(load_bench_state(email)))
+                queued += 1
+            elif (start_d and (today_d - start_d).days >= 7
+                  and _was_delivered(email, "kickoff")  # follow-up only after kickoff landed
+                  and not _sent(email, "progress_check", since_days=7)):
+                _enqueue(email, "progress_check",
+                         _progress_message(load_bench_state(email)))
+                queued += 1
     return queued
 
 
 def pending_notifications() -> list[dict]:
     """Undelivered notifications joined with their Teams conversation ref."""
+    if _dynamo():
+        from bench import dynamo
+
+        return dynamo.pending_notifications()
     with connect() as conn:
         rows = conn.execute(
             """SELECT n.id, n.email, n.kind, n.message,
@@ -186,13 +219,33 @@ def pending_notifications() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def mark_delivered(notification_id: int) -> None:
+def mark_delivered(notification_id) -> None:
+    if _dynamo():
+        from bench import dynamo
+
+        dynamo.mark_delivered(str(notification_id))
+        return
     with connect() as conn:
         conn.execute("UPDATE notifications SET delivered_at = ? WHERE id = ?",
                      (datetime.now(timezone.utc).isoformat(), notification_id))
 
 
+def clear_notifications(email: str) -> None:
+    """Remove a person's notifications (used when the bench start date changes)."""
+    if _dynamo():
+        from bench import dynamo
+
+        dynamo.clear_notifications(_email_key(email))
+        return
+    with connect() as conn:
+        conn.execute("DELETE FROM notifications WHERE email = ?", (_email_key(email),))
+
+
 def notification_log(email: str | None = None) -> list[dict]:
+    if _dynamo():
+        from bench import dynamo
+
+        return dynamo.notification_log(_email_key(email) if email else None)
     query = "SELECT * FROM notifications" + (" WHERE email = ?" if email else "") + " ORDER BY id DESC"
     with connect() as conn:
         return [dict(r) for r in conn.execute(query, (email,) if email else ()).fetchall()]

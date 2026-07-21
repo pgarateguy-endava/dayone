@@ -268,7 +268,9 @@ def set_bench_start_date(employee_email: str, bench_start_date: str | None) -> N
     with connect() as conn:
         conn.execute("UPDATE people SET bench_start_date = ?, status = ? WHERE email = ?",
                      (bench_start_date, computed_status(bench_start_date), employee_email))
-        conn.execute("DELETE FROM notifications WHERE email = ?", (employee_email,))
+    from bench.notify import clear_notifications
+
+    clear_notifications(employee_email)  # backend-aware (SQLite or DynamoDB)
 
 
 def list_bench_people() -> list[dict[str, Any]]:
