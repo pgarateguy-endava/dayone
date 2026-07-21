@@ -37,9 +37,9 @@ uv run --group ui --extra agentic python -m bench.agent_graph \
 
 # 2) S3 — create the bucket once (the app writes but does not create it),
 #    then set BENCH_DOCS_S3_BUCKET in .env and restart the service
-aws s3 mb s3://bench-docs-<you>-demo --region us-west-2 --profile pedro.garateguy.endava
+aws s3 mb s3://bench-docs-mvp --region us-west-2 --profile pedro.garateguy.endava
 #   after an onboard-with-PDF or an EOD report:
-aws s3 ls s3://bench-docs-<you>-demo --recursive --profile pedro.garateguy.endava
+aws s3 ls s3://bench-docs-mvp --recursive --profile pedro.garateguy.endava
 
 # 3) DynamoDB — tables auto-create on first use; set BENCH_STORAGE=dynamodb in .env,
 #    restart, message the bot + change a bench date, then:
