@@ -246,19 +246,29 @@ def dashboard():
     return _page("Bench dashboard", f'<div class="card">{table}</div>{log}')
 
 
+def _pretty_date(iso: str) -> str:
+    """'2026-07-22...' -> 'Jul 22, 2026' (friendlier than a raw ISO date)."""
+    from datetime import date
+
+    try:
+        return date.fromisoformat(iso[:10]).strftime("%b %d, %Y")
+    except Exception:
+        return iso[:10]
+
+
 def _task_review_item(task: dict) -> str:
-    due = f'<span>due {esc(task["due_date"])}</span>' if task["due_date"] else ""
+    due = f'<span>Due {_pretty_date(task["due_date"])}</span>' if task["due_date"] else ""
+    # Only show the completion date for done tasks (the interesting milestone);
+    # skip the noisy "updated" timestamp and the internal note.
+    completed = (f'<span>✓ Completed {_pretty_date(task["completed_at"])}</span>'
+                 if task["status"] == "done" and task["completed_at"] else "")
     evidence = (f'<div class="evidence"><b>Evidence:</b> {esc(task["evidence"])}</div>'
-                if task["evidence"] else '<div class="evidence"><small>No evidence yet.</small></div>')
-    note = (f'<div class="evidence"><b>Note:</b> {esc(task["progress_note"])}</div>'
-            if task["progress_note"] else "")
-    updated = f'<span>updated {esc(task["updated_at"][:10])}</span>' if task["updated_at"] else ""
-    completed = f'<span>completed {esc(task["completed_at"][:10])}</span>' if task["completed_at"] else ""
+                if task["evidence"] else "")
     return f"""<li>
 <div><span class="task-title">{esc(task['title'])}</span> {_status_badge(task['status'])}</div>
-<div class="task-meta"><span>follow-up {esc(FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up']))}</span>
-{due}{updated}{completed}</div>
-{evidence}{note}
+<div class="task-meta"><span>Follow-up {esc(FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up']))}</span>
+{due}{completed}</div>
+{evidence}
 </li>"""
 
 
