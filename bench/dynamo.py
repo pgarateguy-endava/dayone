@@ -21,21 +21,42 @@ def _resource():
     return boto3.resource("dynamodb", region_name=aws_region())
 
 
-def _table(name: str, key: str):
-    """Return a table handle, creating the table (PK=`key`) on first use."""
+class _TableMissing(Exception):
+    """The table does not exist yet (or is being deleted). Reads treat this as empty."""
+
+
+def _table(name: str, key: str, create: bool = True):
+    """Return a table handle. Creates the table (PK=`key`) on first use when create=True;
+    when create=False and the table is absent/half-deleted, raises _TableMissing so
+    read paths can treat it as empty (avoids 500s right after a reset)."""
+    import time
+
     resource = _resource()
     full = f"{dynamodb_table_prefix()}-{name}"
     table = resource.Table(full)
     try:
         table.load()
+        # A table mid-delete still 'loads' but isn't usable — wait it out.
+        if table.table_status == "DELETING":
+            while True:
+                time.sleep(1)
+                try:
+                    table.reload()
+                except Exception:
+                    break  # gone
+        else:
+            return table
     except Exception:
-        table = resource.create_table(
-            TableName=full,
-            KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],
-            BillingMode="PAY_PER_REQUEST",
-        )
-        table.wait_until_exists()
+        pass  # not found — fall through to create-or-signal
+    if not create:
+        raise _TableMissing(full)
+    table = resource.create_table(
+        TableName=full,
+        KeySchema=[{"AttributeName": key, "KeyType": "HASH"}],
+        AttributeDefinitions=[{"AttributeName": key, "AttributeType": "S"}],
+        BillingMode="PAY_PER_REQUEST",
+    )
+    table.wait_until_exists()
     return table
 
 
@@ -56,7 +77,11 @@ def save_conversation_ref(email: str, conversation_id: str) -> None:
 
 
 def get_conversation_ref(email: str) -> str | None:
-    item = _convrefs().get_item(Key={"email": email}).get("Item")
+    try:
+        item = _table("conversation-refs", "email", create=False).get_item(
+            Key={"email": email}).get("Item")
+    except _TableMissing:
+        return None
     return item.get("conversation_id") if item else None
 
 
@@ -74,7 +99,10 @@ def queue_notification(email: str, kind: str, message: str) -> None:
 
 def _all_notifications() -> list[dict]:
     # Demo/pilot scale: a scan is fine. Production would use a GSI on (email, kind).
-    return _notifications().scan().get("Items", [])
+    try:
+        return _table("notifications", "id", create=False).scan().get("Items", [])
+    except _TableMissing:
+        return []
 
 
 def already_sent(email: str, kind: str, since_days: int | None = None) -> bool:
