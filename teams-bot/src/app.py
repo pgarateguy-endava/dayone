@@ -105,7 +105,7 @@ async def proactive_loop():
     from microsoft_teams.api import MessageActivityInput
 
     while True:
-        await asyncio.sleep(20)
+        await asyncio.sleep(5)  # poll interval for proactive delivery (demo-friendly)
         try:
             async with httpx.AsyncClient(base_url=config.BACKEND_URL, timeout=30,
                                          headers=_auth_headers()) as client:
