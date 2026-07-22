@@ -219,7 +219,8 @@ def get_pending_notifications():
 
 
 @router.post("/notifications/{notification_id}/delivered")
-def notification_delivered(notification_id: int):
+def notification_delivered(notification_id: str):
+    # id is a string: SQLite uses integers, DynamoDB uses UUIDs — accept both as str.
     from bench.notify import mark_delivered
 
     mark_delivered(notification_id)

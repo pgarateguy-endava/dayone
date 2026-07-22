@@ -227,7 +227,7 @@ def mark_delivered(notification_id) -> None:
         return
     with connect() as conn:
         conn.execute("UPDATE notifications SET delivered_at = ? WHERE id = ?",
-                     (datetime.now(timezone.utc).isoformat(), notification_id))
+                     (datetime.now(timezone.utc).isoformat(), int(notification_id)))
 
 
 def clear_notifications(email: str) -> None:
