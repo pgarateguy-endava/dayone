@@ -386,6 +386,11 @@ async def onboard(request: Request):
     start_bench(str(form["employee"]).strip(), email, str(form["profile"]), str(form["track"]),
                 bench_start_date=str(form.get("bench_start_date") or "") or None,
                 profile_text=profile_text, profile_filename=profile_filename)
+    # Evaluate proactive rules now so the greeting/kickoff is queued immediately
+    # (otherwise it waits for the 60s scheduler — slow in a live demo).
+    from bench.notify import generate_due_notifications
+
+    generate_due_notifications()
     return RedirectResponse(f"/person/{email}", status_code=303)
 
 
