@@ -1,0 +1,96 @@
+# generated: 2026-07-21
+# last_updated: 2026-07-21
+# project: ai-playground
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# Action Item Status:
+#   - open: Committed during a retrospective, not yet addressed
+#   - in-progress: Actively being worked on
+#   - done: Completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+# - Retrospective appends its action items to action_items; sprint-status surfaces open ones
+
+generated: 2026-07-21
+last_updated: 2026-07-21
+project: ai-playground
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # Epic 1: Durable foundation and mutation audit
+  epic-1: in-progress
+  1-1-version-the-bench-schema-and-backfill-durable-identity-and-lifecycle-fields: review
+  1-2-resolve-and-propagate-the-explicit-local-actor: backlog
+  1-3-audit-shared-mutations-atomically-and-expose-action-history-queries: backlog
+  1-4-establish-channel-consistent-domain-tool-contracts: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: People lifecycle and history safety
+  epic-2: backlog
+  2-1-create-and-edit-people-with-stable-identity-and-validation: backlog
+  2-2-archive-list-restore-and-inspect-people-safely: backlog
+  2-3-preserve-instantiated-task-history-through-catalog-changes: backlog
+  2-4-re-evaluate-lifecycle-immediately-after-date-changes: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: Responsibles and status projections
+  epic-3: backlog
+  3-1-maintain-responsible-assignments-with-safe-uniqueness: backlog
+  3-2-persist-and-project-durable-report-records: backlog
+  3-3-project-independent-notification-lifecycle-status: backlog
+  3-4-show-simulated-approval-states-without-granting-access: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Discoverable navigation and catalog administration
+  epic-4: backlog
+  4-1-expose-persistent-navigation-and-documented-catalog-entry-points: backlog
+  4-2-maintain-roles-and-tracks-with-dependency-safe-deletion: backlog
+  4-3-maintain-task-templates-and-knowledge-records-through-safe-inline-crud: backlog
+  4-4-provide-independent-track-detail-administration: backlog
+  epic-4-retrospective: optional
+
+  # Epic 5: Accessible responsive operator workflows
+  epic-5: backlog
+  5-1-make-forms-and-dialogs-semantic-and-keyboard-complete: backlog
+  5-2-provide-stable-announced-mutation-feedback: backlog
+  5-3-make-status-tables-and-navigation-readable-at-zoom-and-narrow-widths: backlog
+  epic-5-retrospective: optional
+
+  # Epic 6: Verification and acceptance confidence
+  epic-6: backlog
+  6-1-add-focused-unit-and-api-coverage-for-durable-domain-seams: backlog
+  6-2-exercise-every-ui-fr-through-ui-and-end-to-end-scenarios: backlog
+  6-3-validate-accessibility-and-responsive-acceptance-paths: backlog
+  6-4-make-pytest-and-migration-operations-explicit-release-prerequisites: backlog
+  epic-6-retrospective: optional

@@ -1,4 +1,5 @@
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -16,6 +17,152 @@ from bench.tools.state import (
     update_task_status,
 )
 from bench.tools.verify_goals import verify_progress
+
+
+def _legacy_db(path: Path, *, duplicate_people: bool = False) -> None:
+    conn = sqlite3.connect(path)
+    conn.executescript(db_mod._SCHEMA)
+    conn.executemany(
+        "INSERT INTO profiles (id, name) VALUES (?, ?)",
+        [("backend-dev", "Backend Developer")],
+    )
+    conn.execute(
+        "INSERT INTO tracks (id, name) VALUES (?, ?)",
+        ("track", "Track"),
+    )
+    people = [(" Ada@Test.com ", "Ada", "backend-dev", "track", "2026-01-01")]
+    if duplicate_people:
+        people.append(("ada@test.com", "Ada Clone", "backend-dev", "track", "2026-01-02"))
+    conn.executemany(
+        "INSERT INTO people (email, name, profile_id, track_id, started_at) VALUES (?, ?, ?, ?, ?)",
+        people,
+    )
+    conn.execute("INSERT INTO tasks (track_id, title) VALUES ('track', 'Task')")
+    conn.execute("INSERT INTO person_tasks (email, task_id) VALUES (?, 1)", (" Ada@Test.com ",))
+    conn.execute(
+        "INSERT INTO check_ins (email, date, period, at) VALUES (?, '2026-01-01', 'am', 'now')",
+        (" Ada@Test.com ",),
+    )
+    conn.execute(
+        "INSERT INTO conversation_refs (email, conversation_id, updated_at) VALUES (?, 'conv', 'now')",
+        (" Ada@Test.com ",),
+    )
+    conn.execute(
+        "INSERT INTO notifications (email, kind, message, created_at) VALUES (?, 'kickoff', 'hello', 'now')",
+        (" Ada@Test.com ",),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_legacy_schema_is_backfilled_with_durable_identity_and_history(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db")
+
+    with db_mod.connect() as conn:
+        person = conn.execute("SELECT * FROM people").fetchone()
+        assert person["person_id"]
+        assert person["email_normalized"] == "ada@test.com"
+        assert person["archived"] == 0
+        for table in ("person_tasks", "check_ins", "conversation_refs", "notifications"):
+            row = conn.execute(f"SELECT person_id FROM {table}").fetchone()
+            assert row["person_id"] == person["person_id"]
+        assert conn.execute("SELECT archived FROM tasks WHERE id = 1").fetchone()[0] == 0
+        versions = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
+        assert [row[0] for row in versions] == [1, 2, 3, 4]
+
+
+def test_migration_is_idempotent_and_preserves_stable_id(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db")
+    with db_mod.connect() as conn:
+        person_id = conn.execute("SELECT person_id FROM people").fetchone()[0]
+    with db_mod.connect() as conn:
+        assert conn.execute("SELECT person_id FROM people").fetchone()[0] == person_id
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
+
+
+def test_duplicate_normalized_people_fail_before_backfill(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db", duplicate_people=True)
+
+    with pytest.raises(db_mod.MigrationConflictError, match="duplicate normalized person email"):
+        db_mod.connect()
+    conn = sqlite3.connect(tmp_path / "bench.db")
+    assert "person_id" not in {row[1] for row in conn.execute("PRAGMA table_info(people)")}
+    assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 0
+    conn.close()
+
+
+def test_email_edit_keeps_person_id_and_history_attribution(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db")
+    with db_mod.connect() as conn:
+        person_id = conn.execute("SELECT person_id FROM people").fetchone()[0]
+
+    assert db_mod.update_person_email("ada@test.com", " ADA.NEW@Test.com ") == person_id
+
+    with db_mod.connect() as conn:
+        person = conn.execute("SELECT * FROM people").fetchone()
+        assert person["email"] == "ada.new@test.com"
+        assert person["email_normalized"] == "ada.new@test.com"
+        assert person["person_id"] == person_id
+        assert conn.execute("SELECT email, person_id FROM check_ins").fetchone()[0] == "ada.new@test.com"
+        assert conn.execute("SELECT person_id FROM person_tasks").fetchone()[0] == person_id
+
+
+def test_migrated_person_relationships_require_durable_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db")
+
+    with db_mod.connect() as conn:
+        people_columns = {row[1]: row for row in conn.execute("PRAGMA table_info(people)")}
+        person_tasks_columns = {
+            row[1]: row for row in conn.execute("PRAGMA table_info(person_tasks)")
+        }
+        check_in_columns = {row[1]: row for row in conn.execute("PRAGMA table_info(check_ins)")}
+        assert people_columns["person_id"][3] == 1
+        assert people_columns["email_normalized"][3] == 1
+        assert person_tasks_columns["person_id"][3] == 1
+        assert check_in_columns["person_id"][3] == 1
+        assert any(row[2] == "people" and row[3] == "person_id" for row in conn.execute(
+            "PRAGMA foreign_key_list(person_tasks)"
+        ))
+        assert any(row[2] == "people" and row[3] == "person_id" for row in conn.execute(
+            "PRAGMA foreign_key_list(check_ins)"
+        ))
+
+
+def test_email_edit_conflict_with_existing_conversation_is_actionable(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    _legacy_db(tmp_path / "bench.db")
+    with db_mod.connect() as conn:
+        conn.execute(
+            "INSERT INTO conversation_refs (email, conversation_id, updated_at) "
+            "VALUES ('new@example.com', 'responsible-conv', 'now')"
+        )
+
+    with pytest.raises(db_mod.MigrationConflictError, match="conversation reference"):
+        db_mod.update_person_email("ada@test.com", "new@example.com")
+
+    with db_mod.connect() as conn:
+        assert conn.execute("SELECT email FROM people").fetchone()[0] == "ada@test.com"
+
+
+def test_case_insensitive_responsible_conflict_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(db_mod, "PROGRESS_DIR", tmp_path)
+    conn = sqlite3.connect(tmp_path / "bench.db")
+    conn.executescript(db_mod._SCHEMA)
+    conn.execute("INSERT INTO tracks (id, name) VALUES ('track', 'Track')")
+    conn.executemany(
+        "INSERT INTO responsibles (track_id, name, email) VALUES ('track', ?, ?)",
+        [("One", "lead@example.com"), ("Two", " LEAD@example.com ")],
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(db_mod.MigrationConflictError, match="responsible conflict"):
+        db_mod.connect()
 
 
 @pytest.fixture()
@@ -102,6 +249,46 @@ def test_create_task_backfills_people_on_bench(seeded_db):
                 follow_up="weekly", contacts=[{"name": "Sofía", "note": "took it"}])
     state = load_bench_state("ada@test.com")
     assert len(state["tasks"]) == 10  # new catalog task instantiated for Ada too
+
+
+def test_materialized_knowledge_task_keeps_durable_person_link(seeded_db):
+    start_bench("Ada", "ada@test.com", "backend-dev", "aws-backend-track")
+    with db_mod.connect() as conn:
+        task_id = conn.execute(
+            "SELECT id FROM tasks WHERE title = 'Claude Partner Network Learning Path'"
+        ).fetchone()[0]
+        conn.execute("DELETE FROM person_tasks WHERE task_id = ?", (task_id,))
+        conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+    mark_task_done_by_title("ada@test.com", "Claude Partner Network Learning Path")
+
+    with db_mod.connect() as conn:
+        row = conn.execute(
+            "SELECT pt.person_id, pt.status FROM person_tasks pt "
+            "JOIN tasks t ON t.id = pt.task_id "
+            "WHERE pt.email = 'ada@test.com' AND t.title = 'Claude Partner Network Learning Path'"
+        ).fetchone()
+        person_id = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = 'ada@test.com'"
+        ).fetchone()[0]
+    assert row["person_id"] == person_id
+    assert row["status"] == "done"
+
+
+def test_unknown_person_start_date_does_not_clear_legacy_notifications(seeded_db):
+    with db_mod.connect() as conn:
+        conn.execute(
+            "INSERT INTO notifications (email, kind, message, created_at) "
+            "VALUES ('lead@example.com', 'eod_report', 'keep', 'now')"
+        )
+
+    from bench.tools.state import set_bench_start_date
+    set_bench_start_date("unknown@example.com", "2026-07-21")
+
+    with db_mod.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM notifications WHERE email = 'lead@example.com'"
+        ).fetchone()[0] == 1
 
 
 def test_daily_cycle_graph_pm_produces_report(seeded_db):
