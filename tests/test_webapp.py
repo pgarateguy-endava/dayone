@@ -23,6 +23,14 @@ def test_flag_gate_blocks_when_disabled(tmp_path, monkeypatch):
     assert TestClient(app).get("/").status_code == 403
 
 
+def test_web_shell_shows_resolved_actor(client, monkeypatch):
+    monkeypatch.setenv("BENCH_ACTOR", "web-operator")
+
+    page = client.get("/").text
+
+    assert "Operator: web-operator" in page
+
+
 def test_onboard_task_update_and_dashboard(client):
     response = client.post("/onboard", data={
         "employee": "Ada Lovelace", "email": "ada@test.com",

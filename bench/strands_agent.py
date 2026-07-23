@@ -76,10 +76,13 @@ def main() -> None:
     args = parser.parse_args()
 
     agent = build_agent()
-    agent(
-        f"Start bench for {args.employee} ({args.email}) with profile '{args.profile}' and "
-        f"track '{args.track}', then present the bench plan and explain today's daily goals."
-    )
+    from bench.actor import actor_context
+
+    with actor_context():
+        agent(
+            f"Start bench for {args.employee} ({args.email}) with profile '{args.profile}' and "
+            f"track '{args.track}', then present the bench plan and explain today's daily goals."
+        )
 
 
 if __name__ == "__main__":

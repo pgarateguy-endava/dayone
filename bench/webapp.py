@@ -32,6 +32,7 @@ def esc(value: object) -> str:
     return html.escape("" if value is None else str(value), quote=True)
 
 from bench.config import bench_enabled
+from bench.actor import actor_context, current_actor
 from bench.db import FOLLOW_UP_OPTIONS, TASK_CATEGORIES, TASK_STATUSES
 from bench.graph import build_graph
 from bench.seed import seed_if_empty
@@ -58,7 +59,8 @@ async def _proactive_loop():
     while True:
         try:
             if bench_enabled():
-                queued = generate_due_notifications()
+                with actor_context():
+                    queued = generate_due_notifications()
                 if queued:
                     print(f"[notify] queued {queued} proactive notification(s)")
         except Exception as exc:
@@ -157,7 +159,7 @@ def _page(title: str, body: str) -> HTMLResponse:
 <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <style>{_CSS}</style></head><body>
-<nav><a href="/">Dashboard</a><a href="/review">Review</a><a href="/onboard">Onboard to bench</a>
+<nav><span class="actor-context">Operator: {esc(current_actor())}</span><a href="/">Dashboard</a><a href="/review">Review</a><a href="/onboard">Onboard to bench</a>
 <a href="/roles">Roles</a><a href="/knowledge">AI Knowledge</a></nav>
 <main><h1>{title}</h1>{body}</main></body></html>""")
 
@@ -168,6 +170,12 @@ async def _flag_gate(request: Request, call_next):
         return HTMLResponse("Bench domain is disabled. Set BENCH_ENABLED=1.", status_code=403)
     seed_if_empty()
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _actor_context(request: Request, call_next):
+    with actor_context():
+        return await call_next(request)
 
 
 def _progress_badge(verification: dict) -> str:

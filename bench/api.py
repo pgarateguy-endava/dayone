@@ -6,9 +6,12 @@ agentic graph (Bedrock) when available, with a deterministic fallback otherwise.
 """
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 
+from bench.actor import actor_context
 from bench.config import api_token
 from bench.graph import build_graph
 from bench.tools import catalog
@@ -35,8 +38,14 @@ def require_api_token(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(401, detail="Missing or invalid API token.")
 
 
+def establish_actor_context() -> Iterator[str]:
+    """Keep API operations inside the shared environment-derived actor context."""
+    with actor_context() as actor:
+        yield actor
+
+
 router = APIRouter(prefix="/api/v1", tags=["bench-api"],
-                   dependencies=[Depends(require_api_token)])
+                   dependencies=[Depends(require_api_token), Depends(establish_actor_context)])
 
 
 class OnboardIn(BaseModel):
