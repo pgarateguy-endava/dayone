@@ -9,7 +9,7 @@ import json
 from datetime import date, datetime, timezone
 from typing import Any
 
-from bench.db import TASK_STATUSES, connect
+from bench.db import TASK_STATUSES, connect, normalize_email, stable_person_id
 
 
 def _text_key(text: str) -> str:
@@ -52,29 +52,45 @@ def start_bench(employee_name: str, employee_email: str, profile_id: str, track_
     The activation status is computed from bench_start_date — see computed_status().
     profile_text: extracted Endava Profile content — the AI's context about the person.
     """
+    employee_email = normalize_email(employee_email)
     status = computed_status(bench_start_date)
     with connect() as conn:
-        conn.execute("DELETE FROM check_ins WHERE email = ?", (employee_email,))
-        conn.execute("DELETE FROM person_tasks WHERE email = ?", (employee_email,))
-        conn.execute(
-            "INSERT OR REPLACE INTO people (email, name, profile_id, track_id, started_at, "
-            "status, bench_start_date, profile_text, profile_filename) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (employee_email, employee_name, profile_id, track_id,
-             datetime.now(timezone.utc).isoformat(),
-             status, bench_start_date, profile_text, profile_filename))
+        existing = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
+        ).fetchone()
+        person_id = existing["person_id"] if existing else stable_person_id(employee_email)
+        conn.execute("DELETE FROM check_ins WHERE person_id = ?", (person_id,))
+        conn.execute("DELETE FROM person_tasks WHERE person_id = ?", (person_id,))
+        if existing:
+            conn.execute(
+                "UPDATE people SET name = ?, profile_id = ?, track_id = ?, started_at = ?, "
+                "status = ?, bench_start_date = ?, profile_text = ?, profile_filename = ?, "
+                "archived = 0 WHERE person_id = ?",
+                (employee_name, profile_id, track_id, datetime.now(timezone.utc).isoformat(),
+                 status, bench_start_date, profile_text, profile_filename, person_id),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO people (person_id, email, email_normalized, name, profile_id, "
+                "track_id, started_at, status, bench_start_date, profile_text, profile_filename) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (person_id, employee_email, employee_email, employee_name, profile_id, track_id,
+                 datetime.now(timezone.utc).isoformat(), status, bench_start_date,
+                 profile_text, profile_filename),
+            )
         conn.executemany(
-            "INSERT INTO person_tasks (email, task_id) VALUES (?, ?)",
-            [(employee_email, r["id"]) for r in conn.execute(
+            "INSERT INTO person_tasks (person_id, email, task_id) VALUES (?, ?, ?)",
+            [(person_id, employee_email, r["id"]) for r in conn.execute(
                 "SELECT id FROM tasks WHERE track_id = ? ORDER BY sort, id", (track_id,))])
     return load_bench_state(employee_email)
 
 
 def load_bench_state(employee_email: str) -> dict[str, Any]:
     """Load a person's bench record: profile, track, task instances, check-ins. (Read tool)"""
+    employee_email = normalize_email(employee_email)
     with connect() as conn:
         person = conn.execute(
-            "SELECT * FROM people WHERE email = ?", (employee_email,)).fetchone()
+            "SELECT * FROM people WHERE email_normalized = ?", (employee_email,)).fetchone()
         if person is None:
             raise FileNotFoundError(
                 f"No bench state for '{employee_email}'. Run: python -m bench.app start ...")
@@ -84,13 +100,14 @@ def load_bench_state(employee_email: str) -> dict[str, Any]:
                       t.title, t.description, t.category, t.due_date, t.follow_up,
                       t.est_hours, t.link, t.evidence_required, t.requires_approval
                FROM person_tasks pt JOIN tasks t ON t.id = pt.task_id
-               WHERE pt.email = ? ORDER BY t.sort, t.id""", (employee_email,))]
+               WHERE pt.person_id = ? ORDER BY t.sort, t.id""", (person["person_id"],))]
         check_ins = [
             {**dict(r), "planned": json.loads(r["planned"])}
             for r in conn.execute(
                 "SELECT date, period, planned, blockers, note, at FROM check_ins "
-                "WHERE email = ? ORDER BY id", (employee_email,))]
+                "WHERE person_id = ? ORDER BY id", (person["person_id"],))]
     return {
+        "person_id": person["person_id"],
         "employee_name": person["name"],
         "employee_email": person["email"],
         "profile_id": person["profile_id"],
@@ -114,17 +131,21 @@ def update_task_status(employee_email: str, task_id: int, status: str,
     """
     if status not in TASK_STATUSES:
         raise ValueError(f"status must be one of {TASK_STATUSES}")
+    employee_email = normalize_email(employee_email)
     now = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
+        person = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
+        ).fetchone()
         updated = conn.execute(
             "UPDATE person_tasks SET status = ?, "
             "evidence = CASE WHEN ? != '' THEN ? ELSE evidence END, "
             "progress_note = CASE WHEN ? != '' THEN ? ELSE progress_note END, "
             "updated_at = ?, "
             "completed_at = CASE WHEN ? = 'done' THEN ? ELSE NULL END "
-            "WHERE email = ? AND task_id = ?",
+            "WHERE person_id = ? AND task_id = ?",
             (status, evidence, evidence, note, note, now, status, now,
-             employee_email, task_id)).rowcount
+             person["person_id"] if person else None, task_id)).rowcount
         if not updated:
             raise KeyError(f"Task {task_id} is not assigned to {employee_email}")
     return {"task_id": task_id, "status": status, "evidence": evidence,
@@ -137,11 +158,14 @@ def mark_profile_update_done(employee_email: str, evidence: str = "", note: str 
     The agent should not guess task ids for this common pre-bench intent; this helper
     deterministically finds the person's `profile_update` task instance.
     """
+    employee_email = normalize_email(employee_email)
     with connect() as conn:
         task = conn.execute(
             """SELECT pt.task_id, t.title
                FROM person_tasks pt JOIN tasks t ON t.id = pt.task_id
-               WHERE pt.email = ? AND t.category = 'profile_update'
+               WHERE pt.person_id = (
+                   SELECT person_id FROM people WHERE email_normalized = ?
+               ) AND t.category = 'profile_update'
                ORDER BY t.sort, t.id
                LIMIT 1""",
             (employee_email,)).fetchone()
@@ -158,10 +182,13 @@ def mark_profile_update_done(employee_email: str, evidence: str = "", note: str 
 
 
 def _find_assigned_task_by_title(conn, employee_email: str, title_query: str):
+    employee_email = normalize_email(employee_email)
     tasks = conn.execute(
         """SELECT pt.task_id, t.title
            FROM person_tasks pt JOIN tasks t ON t.id = pt.task_id
-           WHERE pt.email = ?
+           WHERE pt.person_id = (
+               SELECT person_id FROM people WHERE email_normalized = ?
+           )
            ORDER BY t.sort, t.id""",
         (employee_email,)).fetchall()
     for task in tasks:
@@ -174,7 +201,10 @@ def _find_assigned_task_by_title(conn, employee_email: str, title_query: str):
 
 
 def _ensure_mandatory_task_from_knowledge(conn, employee_email: str, title_query: str):
-    person = conn.execute("SELECT * FROM people WHERE email = ?", (employee_email,)).fetchone()
+    employee_email = normalize_email(employee_email)
+    person = conn.execute(
+        "SELECT * FROM people WHERE email_normalized = ?", (employee_email,)
+    ).fetchone()
     if person is None:
         raise FileNotFoundError(f"No bench state for '{employee_email}'.")
     mandatory = conn.execute(
@@ -205,8 +235,8 @@ def _ensure_mandatory_task_from_knowledge(conn, employee_email: str, title_query
         title = task["title"]
 
     conn.execute(
-        "INSERT OR IGNORE INTO person_tasks (email, task_id) VALUES (?, ?)",
-        (employee_email, task_id))
+        "INSERT OR IGNORE INTO person_tasks (person_id, email, task_id) VALUES (?, ?, ?)",
+        (person["person_id"], employee_email, task_id))
     return {"task_id": task_id, "title": title}
 
 
@@ -218,6 +248,7 @@ def mark_task_done_by_title(employee_email: str, title_query: str,
     mandatory course exists only in the knowledge grid, it is materialized into the
     person's track before being marked done.
     """
+    employee_email = normalize_email(employee_email)
     with connect() as conn:
         task = _find_assigned_task_by_title(conn, employee_email, title_query)
         if task is None:
@@ -243,7 +274,7 @@ def record_check_in(employee_email: str, period: str, planned: list[str] | None 
     """
     if period not in ("am", "pm"):
         raise ValueError("period must be 'am' or 'pm'")
-    load_bench_state(employee_email)  # raises if not on bench
+    state = load_bench_state(employee_email)  # raises if not on bench
     event = {
         "date": date.today().isoformat(),
         "period": period,
@@ -254,9 +285,9 @@ def record_check_in(employee_email: str, period: str, planned: list[str] | None 
     }
     with connect() as conn:
         conn.execute(
-            "INSERT INTO check_ins (email, date, period, planned, blockers, note, at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (employee_email, event["date"], event["period"],
+            "INSERT INTO check_ins (person_id, email, date, period, planned, blockers, note, at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (state["person_id"], employee_email, event["date"], event["period"],
              json.dumps(event["planned"], ensure_ascii=False),
              event["blockers"], event["note"], event["at"]))
     return event
@@ -265,10 +296,21 @@ def record_check_in(employee_email: str, period: str, planned: list[str] | None 
 def set_bench_start_date(employee_email: str, bench_start_date: str | None) -> None:
     """THE activation trigger: changing the date recomputes the status and clears the
     person's notification history so the proactive rules re-fire. (Write)"""
+    employee_email = normalize_email(employee_email)
     with connect() as conn:
-        conn.execute("UPDATE people SET bench_start_date = ?, status = ? WHERE email = ?",
-                     (bench_start_date, computed_status(bench_start_date), employee_email))
-        conn.execute("DELETE FROM notifications WHERE email = ?", (employee_email,))
+        person = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
+        ).fetchone()
+        if person is None:
+            return
+        conn.execute(
+            "UPDATE people SET bench_start_date = ?, status = ? WHERE person_id = ?",
+            (bench_start_date, computed_status(bench_start_date), person["person_id"]),
+        )
+        conn.execute(
+            "DELETE FROM notifications WHERE person_id = ?",
+            (person["person_id"],),
+        )
 
 
 def list_bench_people() -> list[dict[str, Any]]:

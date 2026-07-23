@@ -38,10 +38,15 @@ def _days_label(days: int) -> str:
 
 def save_conversation_ref(email: str, conversation_id: str) -> None:
     with connect() as conn:
+        email = _email_key(email)
+        person = conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (email,)
+        ).fetchone()
         conn.execute(
-            "INSERT OR REPLACE INTO conversation_refs (email, conversation_id, updated_at) "
-            "VALUES (?, ?, ?)",
-            (_email_key(email), conversation_id, datetime.now(timezone.utc).isoformat()))
+            "INSERT OR REPLACE INTO conversation_refs "
+            "(email, person_id, conversation_id, updated_at) VALUES (?, ?, ?, ?)",
+            (email, person["person_id"] if person else None, conversation_id,
+             datetime.now(timezone.utc).isoformat()))
 
 
 def has_conversation_ref(email: str) -> bool:
@@ -79,9 +84,15 @@ def _delivered(conn, email: str, kind: str) -> bool:
 
 
 def _queue(conn, email: str, kind: str, message: str) -> None:
+    email = _email_key(email)
+    person = conn.execute(
+        "SELECT person_id FROM people WHERE email_normalized = ?", (email,)
+    ).fetchone()
     conn.execute(
-        "INSERT INTO notifications (email, kind, message, created_at) VALUES (?, ?, ?, ?)",
-        (_email_key(email), kind, message, datetime.now(timezone.utc).isoformat()))
+        "INSERT INTO notifications (email, person_id, kind, message, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (email, person["person_id"] if person else None, kind, message,
+         datetime.now(timezone.utc).isoformat()))
 
 
 def _fmt_items(items: list[dict]) -> str:

@@ -1,6 +1,10 @@
+---
+baseline_commit: 92b59f23c89e8650513df7718c86f1dabf5b4a8e
+---
+
 # Story 1.1: Version the Bench schema and backfill durable identity and lifecycle fields
 
-Status: ready-for-dev
+Status: review
 
 ## Story
 
@@ -21,27 +25,27 @@ so that lifecycle, stable identity, and history fields are available without sil
 
 ## Tasks / Subtasks
 
-- [ ] Inspect the current schema and enumerate every person-keyed relationship before changing ownership (AC: 2, 3, 5)
-  - [ ] Capture the current `people.email` primary-key model and references in `person_tasks`, `check_ins`, `conversation_refs`, and `notifications`.
-  - [ ] Define the supported pre-migration schema versions and the persisted migration-version mechanism.
-  - [ ] Keep the migration boundary explicit so audit/report/notification redesign remains in its later stories.
-- [ ] Replace ad-hoc connect-time column additions with ordered, idempotent migrations (AC: 1, 2, 7)
-  - [ ] Preserve fresh-database creation and current seeded catalog behavior.
-  - [ ] Apply migrations transactionally where SQLite permits and record a migration only after its changes succeed.
-  - [ ] Make the migration runner safe for repeated `connect()` calls and current databases.
-- [ ] Backfill stable person identity and editable normalized email support (AC: 3, 4, 5)
-  - [ ] Generate deterministic stable identities for existing people without using mutable email as the durable identity.
-  - [ ] Validate duplicate normalized identities before committing any backfill.
-  - [ ] Preserve foreign-key/history meaning while moving lookups toward `person_id`; do not use destructive delete-and-reinsert shortcuts.
-- [ ] Add explicit lifecycle/archive and task active/archive fields (AC: 2, 6)
-  - [ ] Keep derived date lifecycle values (`inactive`, `pre_bench`, `active`) separate from archive state.
-  - [ ] Use defaults that preserve current active behavior for existing records.
-  - [ ] Do not implement archive/restore UI or task deletion in this story.
-- [ ] Add migration regression coverage (AC: 1, 3, 4, 5, 7, 8)
-  - [ ] Build fixtures for each supported legacy schema and a current schema.
-  - [ ] Assert successful backfill, repeatability, stable IDs, normalized email validation, and every historical reference remaining attributable.
-  - [ ] Assert duplicate people/responsible conflicts fail closed and leave the database unchanged or safely recoverable.
-  - [ ] Run the full suite with `uv run pytest`.
+- [x] Inspect the current schema and enumerate every person-keyed relationship before changing ownership (AC: 2, 3, 5)
+  - [x] Capture the current `people.email` primary-key model and references in `person_tasks`, `check_ins`, `conversation_refs`, and `notifications`.
+  - [x] Define the supported pre-migration schema versions and the persisted migration-version mechanism.
+  - [x] Keep the migration boundary explicit so audit/report/notification redesign remains in its later stories.
+- [x] Replace ad-hoc connect-time column additions with ordered, idempotent migrations (AC: 1, 2, 7)
+  - [x] Preserve fresh-database creation and current seeded catalog behavior.
+  - [x] Apply migrations transactionally where SQLite permits and record a migration only after its changes succeed.
+  - [x] Make the migration runner safe for repeated `connect()` calls and current databases.
+- [x] Backfill stable person identity and editable normalized email support (AC: 3, 4, 5)
+  - [x] Generate deterministic stable identities for existing people without using mutable email as the durable identity.
+  - [x] Validate duplicate normalized identities before committing any backfill.
+  - [x] Preserve foreign-key/history meaning while moving lookups toward `person_id`; do not use destructive delete-and-reinsert shortcuts.
+- [x] Add explicit lifecycle/archive and task active/archive fields (AC: 2, 6)
+  - [x] Keep derived date lifecycle values (`inactive`, `pre_bench`, `active`) separate from archive state.
+  - [x] Use defaults that preserve current active behavior for existing records.
+  - [x] Do not implement archive/restore UI or task deletion in this story.
+- [x] Add migration regression coverage (AC: 1, 3, 4, 5, 7, 8)
+  - [x] Build fixtures for each supported legacy schema and a current schema.
+  - [x] Assert successful backfill, repeatability, stable IDs, normalized email validation, and every historical reference remaining attributable.
+  - [x] Assert duplicate people/responsible conflicts fail closed and leave the database unchanged or safely recoverable.
+  - [x] Run the full suite with `uv run pytest`.
 
 ## Dev Notes
 
@@ -131,11 +135,39 @@ GPT-5 Codex
 
 ### Debug Log References
 
+- Initial targeted migration tests failed because the versioned migration runner and durable identity columns did not yet exist; implemented the runner and reran them successfully.
+- Email-edit regression initially hit legacy foreign-key enforcement; corrected it with an atomic compatibility-key rotation and `PRAGMA foreign_key_check` verification.
+
+### Implementation Plan
+
+- Replace swallowed connect-time `ALTER TABLE` statements with four ordered migrations recorded in `schema_migrations`.
+- Backfill deterministic UUID5 person identities, normalized email keys, durable history links, and archive defaults after validating person/responsible conflicts.
+- Keep legacy email columns and existing tool contracts compatible while new writes populate `person_id`; expose an atomic email-update seam that preserves history.
+- Cover legacy/current/repeat/conflict/email-edit paths and run the complete `uv run pytest` suite.
+
 ### Completion Notes List
 
 - Ultimate context engine analysis completed - comprehensive developer guide created.
-- Story is ready for validation and implementation.
+- Added transactional, ordered schema migrations with repeat-safe version recording.
+- Backfilled deterministic `person_id` values and durable links for people, tasks, check-ins, conversation references, and person-owned notifications.
+- Added normalized/editable email support, conflict fail-closed validation, separate people/task archive flags, and compatibility writes for new records.
+- Added migration regression coverage for backfill, history preservation, idempotency, email edits, and responsible/person conflicts.
+- Senior review fixes: durable links for knowledge-materialized tasks, normalized person-ID state lookups, and safe unknown-person notification handling.
+- Additional review fixes: required person identity constraints/foreign keys, email-owner decoupling, actionable conversation-reference conflicts, and normalized identity checks.
+- Validation: `uv run pytest` → 25 passed, 2 skipped; `git diff --check` passed.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/1-1-version-the-bench-schema-and-backfill-durable-identity-and-lifecycle-fields.md`
+- `bench/db.py`
+- `bench/notify.py`
+- `bench/tools/catalog.py`
+- `bench/tools/state.py`
+- `tests/test_bench.py`
+- `_bmad-output/implementation-artifacts/sprint-status.yaml`
+
+### Change Log
+
+- 2026-07-21: Implemented versioned schema migrations, durable identity/history backfill, lifecycle/archive fields, normalized email editing, and regression tests; status advanced to review.
+- 2026-07-21: Completed senior code review; fixed three durable-identity and notification-safety findings and expanded regression coverage.
+- 2026-07-21: Addressed adversarial review findings for durable constraints, email-edit conflict handling, and non-null normalized identity.
