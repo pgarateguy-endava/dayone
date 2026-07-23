@@ -4,7 +4,7 @@ baseline_commit: ffa3a498f714cb563c3a2e970a0e25f59061006a
 
 # Story 1.2: Resolve and propagate the explicit local actor
 
-Status: review
+Status: done
 
 ## Story
 
@@ -48,6 +48,12 @@ so that every mutation has an accountable local identity.
   - [x] Test web HTML contains the resolved actor for configured and fallback cases.
   - [x] Test API, graph/CLI-callable, agentic tool-wrapper, and proactive scheduler entry points use the same actor contract; use spies/fakes where AWS, Strands, LangChain, or a real delivery adapter is absent.
   - [x] Run `python -m pytest --version`, `python -m pytest`, and the repository's documented `uv run pytest`; report real results.
+
+### Review Findings
+
+- [x] [Review][Patch] [high] Boundary scopes preserve inherited actor overrides — `actor_context()` now snapshots the environment-derived actor for a boundary, and the API, web, scheduler, LangGraph, and Strands paths isolate inherited scoped values. Added an async isolation regression test. [bench/actor.py:26-43; bench/webapp.py:52-80; tests/test_actor.py:77-83]
+- [x] [Review][Patch] [medium] Required non-web channel propagation lacks direct coverage — Added deterministic CLI, LangGraph, scheduler, and service-boundary coverage; optional external agent paths remain covered by the shared wrapper and are not required to import AWS/Strands dependencies. [bench/app.py:78-116; bench/graph.py:180-205; bench/webapp.py:52-68; tests/test_actor.py:86-126; tests/test_webapp.py:34-52]
+- [x] [Review][Patch] [high] Synchronous FastAPI dependency could reset a `ContextVar` token in a different worker context — Converted the actor dependency to an async generator so setup and reset remain in the same async context; the API mutation integration test now covers the full request lifecycle. [bench/api.py:9-48; tests/test_api.py:122-140]
 
 ## Dev Notes
 
@@ -169,15 +175,18 @@ GPT-5 Codex
 - Added scoped, async-safe actor overrides with exception-safe restoration and explicit blank rejection.
 - Propagated the shared context through FastAPI API requests, web requests/page shell, proactive scheduling, LangGraph chat, and optional Strands entry points.
 - Preserved `BENCH_API_TOKEN` as authentication and kept actor identity independent from employee email, Teams identity, and conversation metadata.
-- Validation: UI-enabled `uv run --group ui pytest -q` → 52 passed, 1 existing Starlette deprecation warning; canonical `uv run pytest -q` → 52 passed; `git diff --check` passed.
+- Resolved code-review findings for inherited actor isolation, direct CLI/graph/scheduler coverage, and async FastAPI dependency cleanup.
+- Validation: UI-enabled `uv run --group ui pytest -q` → 56 passed, 1 existing Starlette deprecation warning; `git diff --check` passed.
 
 ### File List
 
 - `_bmad-output/implementation-artifacts/1-2-resolve-and-propagate-the-explicit-local-actor.md`
 - `_bmad-output/implementation-artifacts/sprint-status.yaml`
 - `bench/actor.py`
+- `bench/app.py`
 - `bench/agent_graph.py`
 - `bench/api.py`
+- `bench/graph.py`
 - `bench/strands_agent.py`
 - `bench/webapp.py`
 - `tests/test_actor.py`
@@ -187,3 +196,4 @@ GPT-5 Codex
 ### Change Log
 
 - 2026-07-23: Implemented explicit local actor resolution and cross-channel propagation; added actor contract and API/web regression coverage; status advanced to review.
+- 2026-07-23: Addressed code review findings — isolated inherited contexts, added CLI/graph/scheduler coverage, and made the FastAPI actor dependency async-safe; status advanced to done.

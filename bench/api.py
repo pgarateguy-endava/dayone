@@ -6,7 +6,7 @@ agentic graph (Bedrock) when available, with a deterministic fallback otherwise.
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
@@ -38,7 +38,7 @@ def require_api_token(authorization: str | None = Header(default=None)) -> None:
         raise HTTPException(401, detail="Missing or invalid API token.")
 
 
-def establish_actor_context() -> Iterator[str]:
+async def establish_actor_context() -> AsyncIterator[str]:
     """Keep API operations inside the shared environment-derived actor context."""
     with actor_context() as actor:
         yield actor

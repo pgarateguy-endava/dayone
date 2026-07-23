@@ -27,13 +27,12 @@ def current_actor() -> str:
 def actor_context(value: str | None = None) -> Iterator[str]:
     """Temporarily override the actor and always restore the previous context.
 
-    ``None`` establishes no override, allowing the environment/fallback resolver to
-    remain authoritative. Explicit blank values are rejected so mutations cannot run
-    under an anonymous actor.
+    ``None`` snapshots the environment-derived actor for the boundary, preventing an
+    inherited request/task override from leaking into a new channel operation. Explicit
+    blank values are rejected so mutations cannot run under an anonymous actor.
     """
     if value is None:
-        yield current_actor()
-        return
+        value = resolve_actor()
     if not value.strip():
         raise ValueError("actor must not be blank")
     token = _actor_override.set(value)

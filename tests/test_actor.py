@@ -1,4 +1,5 @@
 import asyncio
+import sys
 
 import pytest
 
@@ -71,3 +72,55 @@ def test_actor_context_isolated_between_async_tasks(monkeypatch):
 
     assert asyncio.run(run()) == ["first", "second"]
     assert current_actor() == "environment-operator"
+
+
+def test_boundary_context_does_not_inherit_scoped_actor(monkeypatch):
+    monkeypatch.setenv("BENCH_ACTOR", "environment-operator")
+
+    with actor_context("inherited-operator"):
+        with actor_context():
+            assert current_actor() == "environment-operator"
+        assert current_actor() == "inherited-operator"
+
+
+def test_cli_entrypoint_uses_environment_actor_boundary(monkeypatch, capsys):
+    import bench.app as app
+
+    monkeypatch.setenv("BENCH_ENABLED", "1")
+    monkeypatch.setenv("BENCH_ACTOR", "cli-operator")
+    monkeypatch.setattr(app, "require_bench_enabled", lambda: None)
+    monkeypatch.setattr(app, "seed_if_empty", lambda: None)
+    monkeypatch.setattr(app, "start_bench", lambda *args: {"tasks": []})
+    monkeypatch.setattr(app, "_plan_from_state", lambda state: current_actor())
+    monkeypatch.setattr(sys, "argv", [
+        "bench.app", "start", "--employee", "Ada", "--email", "ada@test.com",
+        "--profile", "backend-dev", "--track", "aws-backend-track",
+    ])
+
+    with actor_context("inherited-operator"):
+        app.main()
+
+    assert capsys.readouterr().out.strip() == "cli-operator"
+    assert current_actor() == "cli-operator"
+
+
+def test_langgraph_cli_entrypoint_uses_environment_actor_boundary(monkeypatch, capsys):
+    import bench.graph as graph
+
+    monkeypatch.setenv("BENCH_ACTOR", "graph-operator")
+    monkeypatch.setattr(graph, "require_bench_enabled", lambda: None)
+
+    class FakeGraph:
+        def invoke(self, payload):
+            assert current_actor() == "graph-operator"
+            return {"verification": {"follow_up_today": []}}
+
+    monkeypatch.setattr(graph, "build_graph", lambda: FakeGraph())
+    monkeypatch.setattr(sys, "argv", [
+        "bench.graph", "--email", "ada@test.com", "--period", "am",
+    ])
+
+    with actor_context("inherited-operator"):
+        graph.main()
+
+    assert "AM check-in recorded" in capsys.readouterr().out

@@ -49,20 +49,26 @@ from bench.tools.verify_goals import FOLLOW_UP_LABELS, verify_progress
 
 from bench.api import router as api_router
 
+def run_proactive_iteration() -> int:
+    """Evaluate proactive rules under a fresh environment-derived actor boundary."""
+    from bench.notify import generate_due_notifications
+
+    if not bench_enabled():
+        return 0
+    with actor_context():
+        return generate_due_notifications()
+
+
 async def _proactive_loop():
     """Every 60s: evaluate proactive rules (pre-bench greeting, kickoff, weekly
     progress check) and queue notifications; the bot polls and delivers them."""
     import asyncio
 
-    from bench.notify import generate_due_notifications
-
     while True:
         try:
-            if bench_enabled():
-                with actor_context():
-                    queued = generate_due_notifications()
-                if queued:
-                    print(f"[notify] queued {queued} proactive notification(s)")
+            queued = run_proactive_iteration()
+            if queued:
+                print(f"[notify] queued {queued} proactive notification(s)")
         except Exception as exc:
             print(f"[notify] scheduler error: {exc!r}")
         await asyncio.sleep(60)
