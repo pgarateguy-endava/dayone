@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from bench.db import connect
+from bench.tools.audit import append_audit
 
 
 def list_knowledge(kind: str | None = None) -> list[dict[str, Any]]:
@@ -25,6 +26,8 @@ def add_knowledge(kind: str, title: str, provider: str = "", url: str = "",
             "INSERT INTO knowledge (kind, title, provider, url, register_url, tags, notes) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (kind, title, provider, url, register_url, tags, notes))
+        append_audit(conn, entity_type="knowledge", entity_id=cursor.lastrowid,
+                     action="add_knowledge", context={"kind": kind, "title": title})
         return cursor.lastrowid
 
 
@@ -39,15 +42,23 @@ def get_knowledge(item_id: int) -> dict[str, Any]:
 def update_knowledge(item_id: int, *, title: str, provider: str = "", url: str = "",
                      register_url: str = "", tags: str = "", notes: str = "") -> None:
     with connect() as conn:
-        conn.execute(
+        updated = conn.execute(
             "UPDATE knowledge SET title = ?, provider = ?, url = ?, register_url = ?, "
             "tags = ?, notes = ? WHERE id = ?",
             (title, provider, url, register_url, tags, notes, item_id))
+        if not updated.rowcount:
+            return
+        append_audit(conn, entity_type="knowledge", entity_id=item_id,
+                     action="update_knowledge", context={"title": title})
 
 
 def delete_knowledge(item_id: int) -> None:
     with connect() as conn:
-        conn.execute("DELETE FROM knowledge WHERE id = ?", (item_id,))
+        deleted = conn.execute("DELETE FROM knowledge WHERE id = ?", (item_id,))
+        if not deleted.rowcount:
+            return
+        append_audit(conn, entity_type="knowledge", entity_id=item_id,
+                     action="delete_knowledge")
 
 
 def suggest_for_profile(profile_text: str) -> dict[str, list[dict]]:

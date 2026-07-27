@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from bench.db import connect
+from bench.tools.audit import append_audit
 
 
 def _task_dict(conn, row) -> dict[str, Any]:
@@ -86,10 +87,15 @@ def create_task(track_id: str, title: str, description: str = "", category: str 
                 "INSERT INTO task_contacts (task_id, name, email, note) VALUES (?, ?, ?, ?)",
                 (task_id, contact.get("name", ""), contact.get("email", ""),
                  contact.get("note", "")))
+        people = conn.execute(
+            "SELECT person_id, email FROM people WHERE track_id = ?", (track_id,)
+        ).fetchall()
         conn.executemany(
             "INSERT OR IGNORE INTO person_tasks (person_id, email, task_id) VALUES (?, ?, ?)",
-            [(r["person_id"], r["email"], task_id) for r in conn.execute(
-                "SELECT person_id, email FROM people WHERE track_id = ?", (track_id,))])
+            [(r["person_id"], r["email"], task_id) for r in people])
+        append_audit(conn, entity_type="task", entity_id=task_id, action="create_task",
+                     context={"track_id": track_id, "title": title,
+                              "person_ids": [r["person_id"] for r in people]})
     return task_id
 
 
@@ -108,6 +114,8 @@ def upsert_profile(profile_id: str, name: str, summary: str = "",
         conn.executemany(
             "INSERT INTO profile_approvals (profile_id, action) VALUES (?, ?)",
             [(profile_id, a) for a in approvals or []])
+        append_audit(conn, entity_type="profile", entity_id=profile_id,
+                     action="upsert_profile", context={"name": name})
 
 
 def add_task_contact(task_id: int, name: str, email: str = "", note: str = "") -> None:
@@ -115,6 +123,8 @@ def add_task_contact(task_id: int, name: str, email: str = "", note: str = "") -
     with connect() as conn:
         conn.execute("INSERT INTO task_contacts (task_id, name, email, note) VALUES (?, ?, ?, ?)",
                      (task_id, name, email, note))
+        append_audit(conn, entity_type="task", entity_id=task_id,
+                     action="add_task_contact", context={"name": name, "has_email": bool(email)})
 
 
 def load_task(task_id: int) -> dict[str, Any]:
@@ -133,30 +143,46 @@ def update_task(task_id: int, *, title: str, description: str = "", category: st
                 contact_name: str = "", contact_note: str = "") -> None:
     """Update a catalog task in place; replaces its contacts with the given one. (Write tool)"""
     with connect() as conn:
-        conn.execute(
+        person_ids = [r["person_id"] for r in conn.execute(
+            "SELECT DISTINCT person_id FROM person_tasks WHERE task_id = ?", (task_id,)
+        )]
+        updated = conn.execute(
             "UPDATE tasks SET title = ?, description = ?, category = ?, due_date = ?, "
             "follow_up = ?, est_hours = ?, link = ?, evidence_required = ?, "
             "requires_approval = ? WHERE id = ?",
             (title, description, category, due_date, follow_up, est_hours, link,
              int(evidence_required), int(requires_approval), task_id))
+        if not updated.rowcount:
+            return
         conn.execute("DELETE FROM task_contacts WHERE task_id = ?", (task_id,))
         if contact_name.strip():
             conn.execute(
                 "INSERT INTO task_contacts (task_id, name, note) VALUES (?, ?, ?)",
                 (task_id, contact_name.strip(), contact_note.strip()))
+        append_audit(conn, entity_type="task", entity_id=task_id,
+                     action="update_task", context={"title": title, "person_ids": person_ids})
 
 
 def delete_task(task_id: int) -> None:
     """Delete a catalog task and its instances/contacts. (Write tool)"""
     with connect() as conn:
+        task = conn.execute("SELECT id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if task is None:
+            return
+        person_ids = [r["person_id"] for r in conn.execute(
+            "SELECT person_id FROM person_tasks WHERE task_id = ?", (task_id,))]
         conn.execute("DELETE FROM person_tasks WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM task_contacts WHERE task_id = ?", (task_id,))
         conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        append_audit(conn, entity_type="task", entity_id=task_id, action="delete_task",
+                     context={"person_ids": person_ids})
 
 
 def delete_profile(profile_id: str) -> None:
     """Delete a role. Refuses if someone on bench uses it. (Write tool)"""
     with connect() as conn:
+        if conn.execute("SELECT 1 FROM profiles WHERE id = ?", (profile_id,)).fetchone() is None:
+            return
         in_use = conn.execute("SELECT COUNT(*) FROM people WHERE profile_id = ?",
                               (profile_id,)).fetchone()[0]
         if in_use:
@@ -165,6 +191,7 @@ def delete_profile(profile_id: str) -> None:
         conn.execute("DELETE FROM profile_approvals WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM track_profiles WHERE profile_id = ?", (profile_id,))
         conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
+        append_audit(conn, entity_type="profile", entity_id=profile_id, action="delete_profile")
 
 
 def create_track(track_id: str, name: str, duration_weeks: int,
@@ -175,28 +202,46 @@ def create_track(track_id: str, name: str, duration_weeks: int,
                      (track_id, name, duration_weeks))
         conn.executemany("INSERT INTO track_profiles (track_id, profile_id) VALUES (?, ?)",
                          [(track_id, p) for p in profile_ids or []])
+        append_audit(conn, entity_type="track", entity_id=track_id,
+                     action="create_track", context={"name": name, "duration_weeks": duration_weeks})
 
 
 def update_track(track_id: str, name: str, duration_weeks: int,
                  profile_ids: list[str] | None = None) -> None:
     """Update track metadata and its role relations. (Write tool)"""
     with connect() as conn:
-        conn.execute("UPDATE tracks SET name = ?, duration_weeks = ? WHERE id = ?",
+        person_ids = [r["person_id"] for r in conn.execute(
+            "SELECT person_id FROM people WHERE track_id = ?", (track_id,)
+        )]
+        updated = conn.execute("UPDATE tracks SET name = ?, duration_weeks = ? WHERE id = ?",
                      (name, duration_weeks, track_id))
+        if not updated.rowcount:
+            return
         conn.execute("DELETE FROM track_profiles WHERE track_id = ?", (track_id,))
         conn.executemany("INSERT INTO track_profiles (track_id, profile_id) VALUES (?, ?)",
                          [(track_id, p) for p in profile_ids or []])
+        append_audit(conn, entity_type="track", entity_id=track_id,
+                     action="update_track", context={"name": name, "duration_weeks": duration_weeks,
+                              "person_ids": person_ids})
 
 
 def delete_track(track_id: str) -> None:
     """Delete a track and its tasks. Refuses if someone on bench uses it. (Write tool)"""
     with connect() as conn:
+        if conn.execute("SELECT 1 FROM tracks WHERE id = ?", (track_id,)).fetchone() is None:
+            return
         in_use = conn.execute("SELECT COUNT(*) FROM people WHERE track_id = ?",
                               (track_id,)).fetchone()[0]
         if in_use:
             raise ValueError(f"Track '{track_id}' is assigned to {in_use} person(s) on bench")
         task_ids = [r["id"] for r in conn.execute(
             "SELECT id FROM tasks WHERE track_id = ?", (track_id,))]
+        responsible_ids = [r["id"] for r in conn.execute(
+            "SELECT id FROM responsibles WHERE track_id = ?", (track_id,)
+        )]
+        person_ids = [r["person_id"] for r in conn.execute(
+            "SELECT DISTINCT person_id FROM person_tasks WHERE task_id IN "
+            f"({','.join('?' for _ in task_ids)})", task_ids)] if task_ids else []
         for task_id in task_ids:
             conn.execute("DELETE FROM task_contacts WHERE task_id = ?", (task_id,))
             conn.execute("DELETE FROM person_tasks WHERE task_id = ?", (task_id,))
@@ -204,15 +249,25 @@ def delete_track(track_id: str) -> None:
         conn.execute("DELETE FROM responsibles WHERE track_id = ?", (track_id,))
         conn.execute("DELETE FROM track_profiles WHERE track_id = ?", (track_id,))
         conn.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+        append_audit(conn, entity_type="track", entity_id=track_id, action="delete_track",
+                     context={"person_ids": person_ids, "task_ids": task_ids,
+                              "responsible_ids": responsible_ids})
 
 
 def add_responsible(track_id: str, name: str, email: str, role: str = "people-lead") -> None:
     """Add an EOD-report recipient to a track. (Write tool)"""
     with connect() as conn:
-        conn.execute("INSERT INTO responsibles (track_id, name, email, role) VALUES (?, ?, ?, ?)",
-                     (track_id, name, email, role))
+        cursor = conn.execute(
+            "INSERT INTO responsibles (track_id, name, email, role) VALUES (?, ?, ?, ?)",
+            (track_id, name, email, role))
+        append_audit(conn, entity_type="responsible", entity_id=cursor.lastrowid,
+                     action="add_responsible", context={"track_id": track_id, "email": email})
 
 
 def delete_responsible(responsible_id: int) -> None:
     with connect() as conn:
+        if conn.execute("SELECT 1 FROM responsibles WHERE id = ?", (responsible_id,)).fetchone() is None:
+            return
         conn.execute("DELETE FROM responsibles WHERE id = ?", (responsible_id,))
+        append_audit(conn, entity_type="responsible", entity_id=responsible_id,
+                     action="delete_responsible")

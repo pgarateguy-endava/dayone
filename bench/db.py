@@ -25,7 +25,7 @@ FOLLOW_UP_OPTIONS = ("twice_daily", "daily", "weekly", "biweekly")
 TASK_CATEGORIES = ("course", "certification", "profile_update", "portfolio", "admin")
 TASK_STATUSES = ("pending", "in_progress", "done", "blocked")
 
-_MIGRATION_VERSIONS = (1, 2, 3, 4)
+_MIGRATION_VERSIONS = (1, 2, 3, 4, 5, 6)
 _PERSON_NAMESPACE = uuid.UUID("5a2c48ef-3c3c-4b0b-bf2d-6f1f6ea6b9a8")
 
 
@@ -476,6 +476,62 @@ def _migration_4(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX notifications_person_id_idx ON notifications(person_id)")
 
 
+def _migration_5(conn: sqlite3.Connection) -> None:
+    """Add append-only mutation history for the SQLite Bench domain."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            at TEXT NOT NULL,
+            actor TEXT NOT NULL CHECK (length(trim(actor)) > 0),
+            entity_type TEXT NOT NULL CHECK (length(trim(entity_type)) > 0),
+            entity_id TEXT,
+            person_id TEXT REFERENCES people(person_id),
+            action TEXT NOT NULL CHECK (length(trim(action)) > 0),
+            outcome TEXT NOT NULL CHECK (length(trim(outcome)) > 0),
+            context TEXT NOT NULL DEFAULT '{}'
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS audit_log_person_idx ON audit_log(person_id, id DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS audit_log_entity_idx ON audit_log(entity_type, entity_id, id DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS audit_log_at_idx ON audit_log(at, id DESC)")
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+           BEFORE UPDATE ON audit_log
+           BEGIN
+               SELECT RAISE(ABORT, 'audit_log is append-only');
+           END"""
+    )
+    conn.execute(
+        """CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+           BEFORE DELETE ON audit_log
+           BEGIN
+               SELECT RAISE(ABORT, 'audit_log is append-only');
+           END"""
+    )
+
+
+def _migration_6(conn: sqlite3.Connection) -> None:
+    """Add a durable outbox for externally stored EOD reports."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS report_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            filename TEXT NOT NULL,
+            employee_email TEXT NOT NULL,
+            person_id TEXT REFERENCES people(person_id),
+            on_date TEXT NOT NULL,
+            report_md TEXT NOT NULL,
+            external_path TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'completed', 'failed')),
+            error TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS report_outbox_status_idx ON report_outbox(status, id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS report_outbox_person_idx ON report_outbox(person_id, id DESC)")
+
+
 def _run_migrations(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_migrations ("
@@ -483,7 +539,10 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     )
     applied = {row[0] for row in conn.execute("SELECT version FROM schema_migrations")}
     _validate_backfill_conflicts(conn)
-    migrations = {1: _migration_1, 2: _migration_2, 3: _migration_3, 4: _migration_4}
+    migrations = {
+        1: _migration_1, 2: _migration_2, 3: _migration_3,
+        4: _migration_4, 5: _migration_5, 6: _migration_6,
+    }
     for version in _MIGRATION_VERSIONS:
         if version in applied:
             continue
@@ -554,6 +613,20 @@ def update_person_email(old_email: str, new_email: str) -> str:
                     f"UPDATE {table} SET email = ? WHERE person_id = ?",
                     (new_key, person[0]),
                 )
+            conn.execute(
+                "UPDATE report_outbox SET employee_email = ? WHERE person_id = ?",
+                (new_key, person[0]),
+            )
+            from bench.tools.audit import append_audit
+
+            append_audit(
+                conn,
+                entity_type="person",
+                entity_id=person[0],
+                person_id=person[0],
+                action="update_person_email",
+                context={"old_email": old_key, "new_email": new_key},
+            )
             if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
                 raise sqlite3.IntegrityError("foreign-key check failed after email update")
     return person[0]

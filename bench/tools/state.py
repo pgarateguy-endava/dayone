@@ -10,6 +10,7 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from bench.db import TASK_STATUSES, connect, normalize_email, stable_person_id
+from bench.tools.audit import append_audit
 
 
 def _text_key(text: str) -> str:
@@ -59,8 +60,12 @@ def start_bench(employee_name: str, employee_email: str, profile_id: str, track_
             "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
         ).fetchone()
         person_id = existing["person_id"] if existing else stable_person_id(employee_email)
-        conn.execute("DELETE FROM check_ins WHERE person_id = ?", (person_id,))
-        conn.execute("DELETE FROM person_tasks WHERE person_id = ?", (person_id,))
+        check_ins_deleted = conn.execute(
+            "DELETE FROM check_ins WHERE person_id = ?", (person_id,)
+        ).rowcount
+        person_tasks_deleted = conn.execute(
+            "DELETE FROM person_tasks WHERE person_id = ?", (person_id,)
+        ).rowcount
         if existing:
             conn.execute(
                 "UPDATE people SET name = ?, profile_id = ?, track_id = ?, started_at = ?, "
@@ -82,6 +87,13 @@ def start_bench(employee_name: str, employee_email: str, profile_id: str, track_
             "INSERT INTO person_tasks (person_id, email, task_id) VALUES (?, ?, ?)",
             [(person_id, employee_email, r["id"]) for r in conn.execute(
                 "SELECT id FROM tasks WHERE track_id = ? ORDER BY sort, id", (track_id,))])
+        append_audit(
+            conn, entity_type="person", entity_id=person_id, person_id=person_id,
+            action="start_bench",
+            context={"email": employee_email, "profile_id": profile_id, "track_id": track_id,
+                     "check_ins_deleted": check_ins_deleted,
+                     "person_tasks_deleted": person_tasks_deleted},
+        )
     return load_bench_state(employee_email)
 
 
@@ -122,6 +134,39 @@ def load_bench_state(employee_email: str) -> dict[str, Any]:
     }
 
 
+def _update_task_status_in_conn(conn, employee_email: str, task_id: int, status: str,
+                                 evidence: str = "", note: str = "") -> dict:
+    employee_email = normalize_email(employee_email)
+    now = datetime.now(timezone.utc).isoformat()
+    person = conn.execute(
+        "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
+    ).fetchone()
+    updated = conn.execute(
+        "UPDATE person_tasks SET status = ?, "
+        "evidence = CASE WHEN ? != '' THEN ? ELSE evidence END, "
+        "progress_note = CASE WHEN ? != '' THEN ? ELSE progress_note END, "
+        "updated_at = ?, "
+        "completed_at = CASE WHEN ? = 'done' THEN ? ELSE NULL END "
+        "WHERE person_id = ? AND task_id = ?",
+        (status, evidence, evidence, note, note, now, status, now,
+         person["person_id"] if person else None, task_id)).rowcount
+    if not updated:
+        raise KeyError(f"Task {task_id} is not assigned to {employee_email}")
+    append_audit(
+        conn, entity_type="person_task", entity_id=task_id, person_id=person["person_id"],
+        action="update_task_status",
+        context={"status": status, "has_evidence": bool(evidence), "has_note": bool(note)},
+    )
+    persisted = conn.execute(
+        "SELECT status, evidence, progress_note, updated_at FROM person_tasks "
+        "WHERE person_id = ? AND task_id = ?",
+        (person["person_id"], task_id),
+    ).fetchone()
+    return {"task_id": task_id, "status": persisted["status"],
+            "evidence": persisted["evidence"], "note": persisted["progress_note"],
+            "updated_at": persisted["updated_at"]}
+
+
 def update_task_status(employee_email: str, task_id: int, status: str,
                        evidence: str = "", note: str = "") -> dict:
     """Update a person's task instance: status + evidence + note. (Write tool)
@@ -131,25 +176,8 @@ def update_task_status(employee_email: str, task_id: int, status: str,
     """
     if status not in TASK_STATUSES:
         raise ValueError(f"status must be one of {TASK_STATUSES}")
-    employee_email = normalize_email(employee_email)
-    now = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
-        person = conn.execute(
-            "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
-        ).fetchone()
-        updated = conn.execute(
-            "UPDATE person_tasks SET status = ?, "
-            "evidence = CASE WHEN ? != '' THEN ? ELSE evidence END, "
-            "progress_note = CASE WHEN ? != '' THEN ? ELSE progress_note END, "
-            "updated_at = ?, "
-            "completed_at = CASE WHEN ? = 'done' THEN ? ELSE NULL END "
-            "WHERE person_id = ? AND task_id = ?",
-            (status, evidence, evidence, note, note, now, status, now,
-             person["person_id"] if person else None, task_id)).rowcount
-        if not updated:
-            raise KeyError(f"Task {task_id} is not assigned to {employee_email}")
-    return {"task_id": task_id, "status": status, "evidence": evidence,
-            "note": note, "updated_at": now}
+        return _update_task_status_in_conn(conn, employee_email, task_id, status, evidence, note)
 
 
 def mark_profile_update_done(employee_email: str, evidence: str = "", note: str = "") -> dict:
@@ -255,13 +283,10 @@ def mark_task_done_by_title(employee_email: str, title_query: str,
             task = _ensure_mandatory_task_from_knowledge(conn, employee_email, title_query)
         if task is None:
             raise KeyError(f"No assigned task matches '{title_query}' for {employee_email}")
-    reported = evidence or f"Person reported completing: {title_query}"
-    result = update_task_status(
-        employee_email,
-        task["task_id"],
-        "done",
-        reported,
-        note or "Marked from chat by task title.")
+        reported = evidence or f"Person reported completing: {title_query}"
+        result = _update_task_status_in_conn(
+            conn, employee_email, task["task_id"], "done", reported,
+            note or "Marked from chat by task title.")
     return {**result, "title": task["title"]}
 
 
@@ -290,6 +315,11 @@ def record_check_in(employee_email: str, period: str, planned: list[str] | None 
             (state["person_id"], employee_email, event["date"], event["period"],
              json.dumps(event["planned"], ensure_ascii=False),
              event["blockers"], event["note"], event["at"]))
+        append_audit(
+            conn, entity_type="check_in", entity_id=conn.execute("SELECT last_insert_rowid()").fetchone()[0],
+            person_id=state["person_id"], action="record_check_in",
+            context={"period": period, "date": event["date"]},
+        )
     return event
 
 
@@ -297,9 +327,12 @@ def set_bench_start_date(employee_email: str, bench_start_date: str | None) -> N
     """THE activation trigger: changing the date recomputes the status and clears the
     person's notification history so the proactive rules re-fire. (Write)"""
     employee_email = normalize_email(employee_email)
+    from bench.config import storage_backend
+    from bench.notify import clear_notifications
+
     with connect() as conn:
         person = conn.execute(
-            "SELECT person_id FROM people WHERE email_normalized = ?", (employee_email,)
+            "SELECT person_id, bench_start_date FROM people WHERE email_normalized = ?", (employee_email,)
         ).fetchone()
         if person is None:
             return
@@ -307,9 +340,15 @@ def set_bench_start_date(employee_email: str, bench_start_date: str | None) -> N
             "UPDATE people SET bench_start_date = ?, status = ? WHERE person_id = ?",
             (bench_start_date, computed_status(bench_start_date), person["person_id"]),
         )
-    from bench.notify import clear_notifications
-
-    clear_notifications(employee_email)  # backend-aware (SQLite or DynamoDB)
+        if storage_backend() == "sqlite":
+            clear_notifications(employee_email, conn=conn)
+        append_audit(
+            conn, entity_type="person", entity_id=person["person_id"], person_id=person["person_id"],
+            action="set_bench_start_date",
+            context={"old_date": person["bench_start_date"], "new_date": bench_start_date},
+        )
+    if storage_backend() == "dynamodb":
+        clear_notifications(employee_email)  # compatibility path; parity is deferred
 
 
 def list_bench_people() -> list[dict[str, Any]]:
