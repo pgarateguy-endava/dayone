@@ -8,11 +8,16 @@ Estado: `feature/bench` con el hardening del piloto integrado. 32 tests en verde
 
 ## 1. Servicios de AWS (desde local)
 
-- **Bedrock** ya se usa desde local para el chat conversacional y el resumen del ciclo diario.
-- **DynamoDB** como store, detrás de un flag `BENCH_STORAGE=sqlite|dynamodb` (default `sqlite`,
-  así nunca rompe la demo). La costura en `bench/tools/state.py` + `db.py` ya está aislada.
+- **Bedrock** — ya se usa desde local para el chat conversacional y el resumen del ciclo diario.
+- **S3** — HECHO. Reportes EOD y PDFs de perfil van a S3 cuando `BENCH_DOCS_S3_BUCKET` está
+  seteado, si no a disco local (`bench/docstore.py`). Testeado con moto.
+- **DynamoDB** — HECHO (estado por persona, alcance acordado). El estado de notificaciones y
+  conversation refs va a DynamoDB cuando `BENCH_STORAGE=dynamodb`, si no a SQLite
+  (`bench/dynamo.py`, default sqlite para no arriesgar la demo). Testeado con moto.
+  - Pendiente (siguiente incremento): portar `people` y `person_tasks` (tablas con joins al
+    catálogo) — son las que más cuidado requieren; hoy quedan en SQLite.
 - **Bedrock Knowledge Base + S3** para RAG sobre los PDF de perfil (journey B3): que el agente
-  responda con citas en vez del match por tags actual.
+  responda con citas en vez del match por tags actual. Siguiente paso, necesita infra AWS.
 
 ## 2. UI — completar el backoffice local
 

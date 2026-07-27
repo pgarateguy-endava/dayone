@@ -246,19 +246,29 @@ def dashboard():
     return _page("Bench dashboard", f'<div class="card">{table}</div>{log}')
 
 
+def _pretty_date(iso: str) -> str:
+    """'2026-07-22...' -> 'Jul 22, 2026' (friendlier than a raw ISO date)."""
+    from datetime import date
+
+    try:
+        return date.fromisoformat(iso[:10]).strftime("%b %d, %Y")
+    except Exception:
+        return iso[:10]
+
+
 def _task_review_item(task: dict) -> str:
-    due = f'<span>due {esc(task["due_date"])}</span>' if task["due_date"] else ""
+    due = f'<span>Due {_pretty_date(task["due_date"])}</span>' if task["due_date"] else ""
+    # Only show the completion date for done tasks (the interesting milestone);
+    # skip the noisy "updated" timestamp and the internal note.
+    completed = (f'<span>✓ Completed {_pretty_date(task["completed_at"])}</span>'
+                 if task["status"] == "done" and task["completed_at"] else "")
     evidence = (f'<div class="evidence"><b>Evidence:</b> {esc(task["evidence"])}</div>'
-                if task["evidence"] else '<div class="evidence"><small>No evidence yet.</small></div>')
-    note = (f'<div class="evidence"><b>Note:</b> {esc(task["progress_note"])}</div>'
-            if task["progress_note"] else "")
-    updated = f'<span>updated {esc(task["updated_at"][:10])}</span>' if task["updated_at"] else ""
-    completed = f'<span>completed {esc(task["completed_at"][:10])}</span>' if task["completed_at"] else ""
+                if task["evidence"] else "")
     return f"""<li>
 <div><span class="task-title">{esc(task['title'])}</span> {_status_badge(task['status'])}</div>
-<div class="task-meta"><span>follow-up {esc(FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up']))}</span>
-{due}{updated}{completed}</div>
-{evidence}{note}
+<div class="task-meta"><span>Follow-up {esc(FOLLOW_UP_LABELS.get(task['follow_up'], task['follow_up']))}</span>
+{due}{completed}</div>
+{evidence}
 </li>"""
 
 
@@ -363,16 +373,24 @@ heads-up; today/past = active, kickoff message)</label>
 async def onboard(request: Request):
     form = await request.form()
     profile_text, profile_filename = "", ""
+    email = str(form["email"]).strip()
     upload = form.get("profile_pdf")
     if upload is not None and getattr(upload, "filename", ""):
+        from bench.docstore import put_profile_pdf
         from bench.tools.profile_pdf import extract_pdf_text
 
-        profile_text = extract_pdf_text(await upload.read())
+        data = await upload.read()
+        profile_text = extract_pdf_text(data)
         profile_filename = upload.filename
-    email = str(form["email"]).strip()
+        put_profile_pdf(email, data, upload.filename)  # local disk or S3 per config
     start_bench(str(form["employee"]).strip(), email, str(form["profile"]), str(form["track"]),
                 bench_start_date=str(form.get("bench_start_date") or "") or None,
                 profile_text=profile_text, profile_filename=profile_filename)
+    # Evaluate proactive rules now so the greeting/kickoff is queued immediately
+    # (otherwise it waits for the 60s scheduler — slow in a live demo).
+    from bench.notify import generate_due_notifications
+
+    generate_due_notifications()
     return RedirectResponse(f"/person/{email}", status_code=303)
 
 

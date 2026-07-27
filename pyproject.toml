@@ -30,6 +30,8 @@ agentic = [
 [dependency-groups]
 dev = [
   "pytest>=8.0.0",
+  "moto>=5.0",
+  "boto3>=1.34",
 ]
 # Dev web UI (bench/webapp.py)
 ui = [
