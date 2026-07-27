@@ -4,7 +4,9 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import bench.db as db_mod
+import bench.webapp as webapp_mod
 import bench.tools.eod_report as eod_report_mod
+from bench.actor import actor_context, current_actor
 from bench.seed import seed
 from bench.webapp import app
 
@@ -21,6 +23,33 @@ def client(tmp_path, monkeypatch):
 def test_flag_gate_blocks_when_disabled(tmp_path, monkeypatch):
     monkeypatch.setenv("BENCH_ENABLED", "0")
     assert TestClient(app).get("/").status_code == 403
+
+
+def test_web_shell_shows_resolved_actor(client, monkeypatch):
+    monkeypatch.setenv("BENCH_ACTOR", "web-operator")
+
+    page = client.get("/").text
+
+    assert "Operator: web-operator" in page
+
+
+def test_proactive_scheduler_uses_environment_actor_boundary(monkeypatch):
+    monkeypatch.setenv("BENCH_ENABLED", "1")
+    monkeypatch.setenv("BENCH_ACTOR", "scheduler-operator")
+    observed = {}
+
+    def fake_generate_due_notifications():
+        observed["actor"] = current_actor()
+        return 1
+
+    monkeypatch.setattr(webapp_mod, "bench_enabled", lambda: True)
+    monkeypatch.setattr(
+        "bench.notify.generate_due_notifications", fake_generate_due_notifications)
+
+    with actor_context("inherited-operator"):
+        assert webapp_mod.run_proactive_iteration() == 1
+
+    assert observed["actor"] == "scheduler-operator"
 
 
 def test_onboard_task_update_and_dashboard(client):

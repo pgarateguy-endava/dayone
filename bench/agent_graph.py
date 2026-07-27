@@ -242,20 +242,23 @@ def run_chat(employee_email: str, text: str, thread_id: str | None = None) -> st
     (Bedrock ValidationException), the thread history is discarded and the turn
     retried fresh — losing chat memory beats a permanently broken conversation.
     """
-    graph = build_agent_graph(employee_email)
-    thread = thread_id or f"cli:{employee_email}"
-    payload = {"messages": [{"role": "user", "content": text}]}
-    try:
-        result = graph.invoke(payload, config={"configurable": {"thread_id": thread}})
-    except Exception as exc:
-        if "tool_use" not in str(exc):
-            raise
+    from bench.actor import actor_context
+
+    with actor_context():
+        graph = build_agent_graph(employee_email)
+        thread = thread_id or f"cli:{employee_email}"
+        payload = {"messages": [{"role": "user", "content": text}]}
         try:
-            _CHECKPOINTER.delete_thread(thread)
-        except Exception:
-            thread = f"{thread}:repaired"
-        result = graph.invoke(payload, config={"configurable": {"thread_id": thread}})
-    return result["messages"][-1].content
+            result = graph.invoke(payload, config={"configurable": {"thread_id": thread}})
+        except Exception as exc:
+            if "tool_use" not in str(exc):
+                raise
+            try:
+                _CHECKPOINTER.delete_thread(thread)
+            except Exception:
+                thread = f"{thread}:repaired"
+            result = graph.invoke(payload, config={"configurable": {"thread_id": thread}})
+        return result["messages"][-1].content
 
 
 def main() -> None:

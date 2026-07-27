@@ -179,14 +179,17 @@ def main() -> None:
     parser.add_argument("--blockers", default="")
     args = parser.parse_args()
 
-    app = build_graph()
-    result = app.invoke({
-        "employee_email": args.email,
-        "period": args.period,
-        "planned": args.planned,
-        "task_updates": parse_task_updates(args.task),
-        "blockers": args.blockers,
-    })
+    from bench.actor import actor_context
+
+    with actor_context():
+        app = build_graph()
+        result = app.invoke({
+            "employee_email": args.email,
+            "period": args.period,
+            "planned": args.planned,
+            "task_updates": parse_task_updates(args.task),
+            "blockers": args.blockers,
+        })
 
     if args.period == "pm":
         print(result["report_md"])

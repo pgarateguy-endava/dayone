@@ -76,37 +76,40 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    if args.command == "start":
-        state = start_bench(args.employee, args.email, args.profile, args.track)
-        print(_plan_from_state(state))
-    elif args.command == "plan":
-        print(_plan_from_state(load_bench_state(args.email)))
-    elif args.command == "tasks":
-        state = load_bench_state(args.email)
-        for task in state["tasks"]:
-            due = f" due {task['due_date']}" if task["due_date"] else ""
-            print(f"#{task['task_id']} [{task['status']}] {task['title']} "
-                  f"({task['category']}, {task['follow_up']}{due})")
-    elif args.command == "task":
-        print(json.dumps(update_task_status(args.email, args.id, args.status,
-                                            args.evidence, args.note),
-                         indent=2, ensure_ascii=False))
-    elif args.command == "checkin":
-        print(json.dumps(record_check_in(args.email, args.period, planned=args.planned,
-                                         blockers=args.blockers, note=args.note),
-                         indent=2, ensure_ascii=False))
-    elif args.command == "verify":
-        state = load_bench_state(args.email)
-        track = load_track(state["track_id"])
-        print(json.dumps(verify_progress(state, track, args.date), indent=2, ensure_ascii=False))
-    elif args.command == "report":
-        state = load_bench_state(args.email)
-        track = load_track(state["track_id"])
-        verification = verify_progress(state, track, args.date)
-        report = build_eod_report(state, track, verification)
-        path = save_eod_report(report, args.email, verification["date"])
-        print(report)
-        print(f"\n[saved to {path}]")
+    from bench.actor import actor_context
+
+    with actor_context():
+        if args.command == "start":
+            state = start_bench(args.employee, args.email, args.profile, args.track)
+            print(_plan_from_state(state))
+        elif args.command == "plan":
+            print(_plan_from_state(load_bench_state(args.email)))
+        elif args.command == "tasks":
+            state = load_bench_state(args.email)
+            for task in state["tasks"]:
+                due = f" due {task['due_date']}" if task["due_date"] else ""
+                print(f"#{task['task_id']} [{task['status']}] {task['title']} "
+                      f"({task['category']}, {task['follow_up']}{due})")
+        elif args.command == "task":
+            print(json.dumps(update_task_status(args.email, args.id, args.status,
+                                                args.evidence, args.note),
+                             indent=2, ensure_ascii=False))
+        elif args.command == "checkin":
+            print(json.dumps(record_check_in(args.email, args.period, planned=args.planned,
+                                             blockers=args.blockers, note=args.note),
+                             indent=2, ensure_ascii=False))
+        elif args.command == "verify":
+            state = load_bench_state(args.email)
+            track = load_track(state["track_id"])
+            print(json.dumps(verify_progress(state, track, args.date), indent=2, ensure_ascii=False))
+        elif args.command == "report":
+            state = load_bench_state(args.email)
+            track = load_track(state["track_id"])
+            verification = verify_progress(state, track, args.date)
+            report = build_eod_report(state, track, verification)
+            path = save_eod_report(report, args.email, verification["date"])
+            print(report)
+            print(f"\n[saved to {path}]")
 
 
 if __name__ == "__main__":

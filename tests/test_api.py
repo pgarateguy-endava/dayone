@@ -4,7 +4,9 @@ pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import bench.db as db_mod
+import bench.api as api_mod
 import bench.tools.eod_report as eod_report_mod
+from bench.actor import current_actor
 from bench.seed import seed
 from bench.webapp import app
 
@@ -120,3 +122,21 @@ def test_api_token_enforced_when_set(client, monkeypatch):
     ok = client.get("/api/v1/catalog", headers={"Authorization": "Bearer s3cret"})
     assert ok.status_code == 200
     assert any(p["id"] == "senior-dev" for p in ok.json()["profiles"])
+
+
+def test_api_mutation_uses_shared_actor_context(client, monkeypatch):
+    monkeypatch.setenv("BENCH_ACTOR", "api-operator")
+    observed = {}
+
+    def fake_start_bench(*args, **kwargs):
+        observed["actor"] = current_actor()
+        return {"tasks": []}
+
+    monkeypatch.setattr(api_mod, "start_bench", fake_start_bench)
+    monkeypatch.setattr(api_mod, "_plan_reply", lambda state: current_actor())
+
+    response = _onboard(client)
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "api-operator"
+    assert observed["actor"] == "api-operator"
