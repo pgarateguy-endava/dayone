@@ -1,0 +1,7 @@
+module,skill,source,project_root_required
+core,bmad-help,environment-installed,yes
+core,bmad-spec,environment-installed,yes
+bmm,bmad-quick-dev,environment-installed,yes
+bmm,bmad-sprint-planning,environment-installed,yes
+bmm,bmad-dev-story,environment-installed,yes
+bmm,bmad-code-review,environment-installed,yes

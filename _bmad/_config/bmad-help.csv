@@ -1,0 +1,7 @@
+module,skill,display-name,phase,required,output-location
+Core,bmad-help,BMad Help,anytime,false,
+Core,bmad-spec,Spec,anytime,false,{output_folder}/specs
+BMM,bmad-sprint-planning,Sprint Planning,4-implementation,true,implementation_artifacts
+BMM,bmad-quick-dev,Quick Dev,anytime,false,implementation_artifacts
+BMM,bmad-dev-story,Dev Story,4-implementation,true,implementation_artifacts
+BMM,bmad-code-review,Code Review,4-implementation,false,

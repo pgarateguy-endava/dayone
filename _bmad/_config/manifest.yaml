@@ -1,0 +1,10 @@
+installation:
+  version: 6.10.0
+  source: environment-installed-bmad-skills
+modules:
+  - name: core
+    version: 6.10.0
+  - name: bmm
+    version: 6.10.0
+project_root: child-repository
+skill_distribution: external-prerequisite
