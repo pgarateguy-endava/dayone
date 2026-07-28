@@ -1,0 +1,6 @@
+# Team rules loaded by the installed bmad-quick-dev skill.
+[workflow]
+persistent_facts = [
+  "file:{project-root}/AGENTS.md",
+  "file:{project-root}/docs/development-workflow.md",
+]

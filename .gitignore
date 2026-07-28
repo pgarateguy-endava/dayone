@@ -7,5 +7,8 @@ __pycache__/
 .local-progress/
 .coverage
 .pytest_cache/
+_bmad/config.user.toml
+_bmad/custom/config.user.toml
+_bmad/_memory/
 dist/
 build/
