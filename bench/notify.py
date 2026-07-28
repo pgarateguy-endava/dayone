@@ -13,6 +13,7 @@ Rules (evaluated by the scheduler in webapp startup, and testable directly):
 """
 from __future__ import annotations
 
+import sqlite3
 from datetime import date, datetime, timezone
 
 from bench.config import storage_backend
@@ -20,6 +21,7 @@ from bench.db import connect
 from bench.tools.catalog import load_track
 from bench.tools.knowledge import suggest_for_profile
 from bench.tools.state import list_bench_people, load_bench_state
+from bench.tools.audit import append_audit
 from bench.tools.verify_goals import verify_progress
 
 PROFILE_PREP_WINDOW_DAYS = 10
@@ -58,6 +60,11 @@ def save_conversation_ref(email: str, conversation_id: str) -> None:
             "(email, person_id, conversation_id, updated_at) VALUES (?, ?, ?, ?)",
             (email, person["person_id"] if person else None, conversation_id,
              datetime.now(timezone.utc).isoformat()))
+        append_audit(
+            conn, entity_type="conversation_ref", entity_id=email,
+            person_id=person["person_id"] if person else None,
+            action="save_conversation_ref", context={"has_conversation_id": bool(conversation_id)},
+        )
 
 
 def has_conversation_ref(email: str) -> bool:
@@ -98,6 +105,11 @@ def _enqueue(email: str, kind: str, message: str) -> None:
             "VALUES (?, ?, ?, ?, ?)",
             (email, person["person_id"] if person else None, kind, message,
              datetime.now(timezone.utc).isoformat()))
+        append_audit(
+            conn, entity_type="notification", entity_id=conn.execute("SELECT last_insert_rowid()").fetchone()[0],
+            person_id=person["person_id"] if person else None,
+            action="queue_notification", context={"email": email, "kind": kind},
+        )
 
 
 def _sent(email: str, kind: str, since_days: int | None = None) -> bool:
@@ -237,19 +249,49 @@ def mark_delivered(notification_id) -> None:
         dynamo.mark_delivered(str(notification_id))
         return
     with connect() as conn:
-        conn.execute("UPDATE notifications SET delivered_at = ? WHERE id = ?",
-                     (datetime.now(timezone.utc).isoformat(), int(notification_id)))
+        row = conn.execute("SELECT person_id, delivered_at FROM notifications WHERE id = ?",
+                           (int(notification_id),)).fetchone()
+        if row is None:
+            raise KeyError(f"Notification {notification_id} not found")
+        if row["delivered_at"] is not None:
+            return
+        updated = conn.execute(
+            "UPDATE notifications SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+            (datetime.now(timezone.utc).isoformat(), int(notification_id))).rowcount
+        if not updated:
+            raise KeyError(f"Notification {notification_id} not found")
+        append_audit(
+            conn, entity_type="notification", entity_id=notification_id,
+            person_id=row["person_id"] if row else None,
+            action="mark_notification_delivered",
+        )
 
 
-def clear_notifications(email: str) -> None:
+def clear_notifications(email: str, conn: sqlite3.Connection | None = None) -> None:
     """Remove a person's notifications (used when the bench start date changes)."""
+    if _dynamo() and conn is not None:
+        raise RuntimeError("DynamoDB notification clearing cannot use a SQLite transaction")
     if _dynamo():
         from bench import dynamo
 
         dynamo.clear_notifications(_email_key(email))
         return
-    with connect() as conn:
-        conn.execute("DELETE FROM notifications WHERE email = ?", (_email_key(email),))
+    def clear(active_conn: sqlite3.Connection) -> None:
+        email_key = _email_key(email)
+        person = active_conn.execute(
+            "SELECT person_id FROM people WHERE email_normalized = ?", (email_key,)
+        ).fetchone()
+        deleted = active_conn.execute("DELETE FROM notifications WHERE email = ?", (email_key,)).rowcount
+        append_audit(
+            active_conn, entity_type="notification", entity_id=email_key,
+            person_id=person["person_id"] if person else None,
+            action="clear_notifications", context={"deleted_count": deleted},
+        )
+    if conn is not None:
+        clear(conn)
+    else:
+        with connect() as active_conn:
+            clear(active_conn)
 
 
 def notification_log(email: str | None = None) -> list[dict]:

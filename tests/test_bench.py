@@ -69,7 +69,7 @@ def test_legacy_schema_is_backfilled_with_durable_identity_and_history(tmp_path,
             assert row["person_id"] == person["person_id"]
         assert conn.execute("SELECT archived FROM tasks WHERE id = 1").fetchone()[0] == 0
         versions = conn.execute("SELECT version FROM schema_migrations ORDER BY version").fetchall()
-        assert [row[0] for row in versions] == [1, 2, 3, 4]
+        assert [row[0] for row in versions] == [1, 2, 3, 4, 5, 6]
 
 
 def test_migration_is_idempotent_and_preserves_stable_id(tmp_path, monkeypatch):
@@ -79,7 +79,7 @@ def test_migration_is_idempotent_and_preserves_stable_id(tmp_path, monkeypatch):
         person_id = conn.execute("SELECT person_id FROM people").fetchone()[0]
     with db_mod.connect() as conn:
         assert conn.execute("SELECT person_id FROM people").fetchone()[0] == person_id
-        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 4
+        assert conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0] == 6
 
 
 def test_duplicate_normalized_people_fail_before_backfill(tmp_path, monkeypatch):
