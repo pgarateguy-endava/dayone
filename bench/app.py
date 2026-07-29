@@ -17,10 +17,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 
 from bench.config import require_bench_enabled
 from bench.seed import seed_if_empty
 from bench.tools.catalog import load_profile, load_track
+from bench.tools.contracts import (DomainError, execute, onboard_person, require_email,
+                                   run_checkin_cycle, save_person_report, update_person_task)
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
 from bench.tools.state import (
@@ -78,38 +81,41 @@ def main() -> None:
 
     from bench.actor import actor_context
 
-    with actor_context():
-        if args.command == "start":
-            state = start_bench(args.employee, args.email, args.profile, args.track)
-            print(_plan_from_state(state))
-        elif args.command == "plan":
-            print(_plan_from_state(load_bench_state(args.email)))
-        elif args.command == "tasks":
-            state = load_bench_state(args.email)
-            for task in state["tasks"]:
-                due = f" due {task['due_date']}" if task["due_date"] else ""
-                print(f"#{task['task_id']} [{task['status']}] {task['title']} "
-                      f"({task['category']}, {task['follow_up']}{due})")
-        elif args.command == "task":
-            print(json.dumps(update_task_status(args.email, args.id, args.status,
-                                                args.evidence, args.note),
-                             indent=2, ensure_ascii=False))
-        elif args.command == "checkin":
-            print(json.dumps(record_check_in(args.email, args.period, planned=args.planned,
-                                             blockers=args.blockers, note=args.note),
-                             indent=2, ensure_ascii=False))
-        elif args.command == "verify":
-            state = load_bench_state(args.email)
-            track = load_track(state["track_id"])
-            print(json.dumps(verify_progress(state, track, args.date), indent=2, ensure_ascii=False))
-        elif args.command == "report":
-            state = load_bench_state(args.email)
-            track = load_track(state["track_id"])
-            verification = verify_progress(state, track, args.date)
-            report = build_eod_report(state, track, verification)
-            path = save_eod_report(report, args.email, verification["date"])
-            print(report)
-            print(f"\n[saved to {path}]")
+    try:
+        with actor_context():
+            if args.command == "start":
+                state = onboard_person(args.employee, args.email, args.profile, args.track,
+                                       starter=start_bench).data
+                print(_plan_from_state(state))
+            elif args.command == "plan":
+                print(_plan_from_state(execute("load_person", load_bench_state,
+                                               require_email(args.email)).data))
+            elif args.command == "tasks":
+                state = execute("load_person", load_bench_state, require_email(args.email)).data
+                for task in state["tasks"]:
+                    due = f" due {task['due_date']}" if task["due_date"] else ""
+                    print(f"#{task['task_id']} [{task['status']}] {task['title']} "
+                          f"({task['category']}, {task['follow_up']}{due})")
+            elif args.command == "task":
+                print(json.dumps(update_person_task(args.email, args.id, args.status,
+                                         args.evidence, args.note).data,
+                                 indent=2, ensure_ascii=False))
+            elif args.command == "checkin":
+                print(json.dumps(run_checkin_cycle(args.email, args.period, planned=args.planned,
+                                         blockers=args.blockers,
+                                         task_updates=[]).data,
+                                 indent=2, ensure_ascii=False))
+            elif args.command == "verify":
+                state = execute("load_person", load_bench_state, require_email(args.email)).data
+                track = load_track(state["track_id"])
+                print(json.dumps(verify_progress(state, track, args.date), indent=2, ensure_ascii=False))
+            elif args.command == "report":
+                result = save_person_report(args.email, args.date).data
+                print(result["report"])
+                print(f"\n[saved to {result['path']}]")
+    except DomainError as exc:
+        print(exc.safe_message, file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 if __name__ == "__main__":

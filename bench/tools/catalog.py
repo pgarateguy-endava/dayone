@@ -9,6 +9,7 @@ from typing import Any
 
 from bench.db import connect
 from bench.tools.audit import append_audit
+from bench.tools.contracts import require_email
 
 
 def _task_dict(conn, row) -> dict[str, Any]:
@@ -256,6 +257,7 @@ def delete_track(track_id: str) -> None:
 
 def add_responsible(track_id: str, name: str, email: str, role: str = "people-lead") -> None:
     """Add an EOD-report recipient to a track. (Write tool)"""
+    email = require_email(email)
     with connect() as conn:
         cursor = conn.execute(
             "INSERT INTO responsibles (track_id, name, email, role) VALUES (?, ?, ?, ?)",
