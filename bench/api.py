@@ -15,6 +15,9 @@ from bench.actor import actor_context
 from bench.config import api_token
 from bench.graph import build_graph
 from bench.tools import catalog
+from bench.tools.contracts import (DomainError, execute, load_person, mark_named_task_done,
+                                   mark_profile_done, onboard_person, require_email,
+                                   run_checkin_cycle, save_person_report, update_person_task)
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
 from bench.tools.knowledge import suggest_for_profile
@@ -26,6 +29,16 @@ from bench.tools.state import (
     update_task_status,
 )
 from bench.tools.verify_goals import verify_progress
+
+
+def _domain_http_error(exc: DomainError) -> HTTPException:
+    status = {
+        "validation": 400,
+        "not_found": 404,
+        "conflict": 409,
+        "protected": 409,
+    }.get(exc.code, 500)
+    return HTTPException(status, detail=exc.safe_message)
 
 def require_api_token(authorization: str | None = Header(default=None)) -> None:
     """Shared-secret gate for the whole service API. When BENCH_API_TOKEN is unset the
@@ -79,13 +92,15 @@ class TaskUpdateIn(BaseModel):
 
 def _state_or_404(email: str) -> dict:
     try:
-        return load_bench_state(_email_key(email))
-    except FileNotFoundError:
-        raise HTTPException(404, detail=f"'{email}' is not on bench. Use /onboard first.")
+        return load_person(email).data
+    except DomainError as exc:
+        if exc.code == "not_found":
+            raise HTTPException(404, detail=f"'{email}' is not on bench. Use /onboard first.") from exc
+        raise _domain_http_error(exc) from exc
 
 
 def _email_key(email: str) -> str:
-    return email.strip().lower()
+    return require_email(email)
 
 
 def _plan_reply(state: dict) -> str:
@@ -104,11 +119,7 @@ def _tasks_reply(state: dict) -> str:
 
 
 def _report_reply(state: dict) -> str:
-    track = catalog.load_track(state["track_id"])
-    verification = verify_progress(state, track)
-    report = build_eod_report(state, track, verification)
-    save_eod_report(report, state["employee_email"], verification["date"])
-    return report
+    return save_person_report(state["employee_email"]).data["report"]
 
 
 def _status_reply(state: dict) -> str:
@@ -216,7 +227,11 @@ def register_conversation_ref(body: ConversationRefIn):
     """The bot registers where each person talks, enabling proactive messages."""
     from bench.notify import save_conversation_ref
 
-    save_conversation_ref(_email_key(body.email), body.conversation_id)
+    try:
+        execute("save_conversation_ref", save_conversation_ref,
+                _email_key(body.email), body.conversation_id)
+    except DomainError as exc:
+        raise _domain_http_error(exc) from exc
     return {"ok": True}
 
 
@@ -232,7 +247,10 @@ def notification_delivered(notification_id: str):
     # id is a string: SQLite uses integers, DynamoDB uses UUIDs — accept both as str.
     from bench.notify import mark_delivered
 
-    mark_delivered(notification_id)
+    try:
+        execute("mark_notification_delivered", mark_delivered, notification_id)
+    except DomainError as exc:
+        raise _domain_http_error(exc) from exc
     return {"ok": True}
 
 
@@ -248,10 +266,11 @@ def get_catalog():
 @router.post("/onboard")
 def onboard(body: OnboardIn):
     try:
-        state = start_bench(body.employee_name, _email_key(body.employee_email),
-                            body.profile_id, body.track_id)
-    except KeyError as exc:
-        raise HTTPException(400, detail=str(exc))
+        state = onboard_person(body.employee_name, body.employee_email,
+                               body.profile_id, body.track_id,
+                               starter=start_bench).data
+    except DomainError as exc:
+        raise _domain_http_error(exc) from exc
     return {"reply": _plan_reply(state)}
 
 
@@ -272,27 +291,29 @@ def report(email: str):
 
 @router.post("/task")
 def task_update(body: TaskUpdateIn):
-    employee_email = _email_key(body.employee_email)
-    _state_or_404(employee_email)
     try:
-        update_task_status(employee_email, body.task_id, body.status,
-                           body.evidence, body.note)
-    except (KeyError, ValueError) as exc:
-        raise HTTPException(400, detail=str(exc))
+        employee_email = _email_key(body.employee_email)
+        _state_or_404(employee_email)
+        update_person_task(employee_email, body.task_id, body.status,
+                           body.evidence, body.note,
+                           updater=update_task_status)
+    except DomainError as exc:
+        raise _domain_http_error(exc) from exc
     return {"reply": f"Task #{body.task_id} updated to **{body.status}**."}
 
 
 @router.post("/checkin")
 def checkin(body: CheckinIn):
-    employee_email = _email_key(body.employee_email)
-    _state_or_404(employee_email)
+    try:
+        employee_email = _email_key(body.employee_email)
+        _state_or_404(employee_email)
+    except DomainError as exc:
+        raise _domain_http_error(exc) from exc
     if body.period not in ("am", "pm"):
         raise HTTPException(400, detail="period must be 'am' or 'pm'")
-    result = build_graph().invoke({
-        "employee_email": employee_email, "period": body.period,
-        "planned": body.planned, "blockers": body.blockers,
-        "task_updates": body.task_updates,
-    })
+    result = run_checkin_cycle(employee_email, body.period,
+                               planned=body.planned, blockers=body.blockers,
+                               task_updates=body.task_updates).data
     if body.period == "pm":
         return {"reply": result["report_md"]}
     verification = result["verification"]
@@ -306,18 +327,21 @@ def _deterministic_fallback(body: ChatIn) -> str:
     shortcuts over the deterministic tools, plus the verified status."""
     employee_email = _email_key(body.employee_email)
     try:
-        state = load_bench_state(employee_email)
-    except FileNotFoundError:
+        state = load_person(employee_email).data
+    except DomainError as exc:
+        if exc.code != "not_found":
+            raise
         return ("No estás en bench todavía y el chat con IA no está disponible. "
                 "Pedile a tu People Lead que te dé de alta desde el backoffice web.")
     text = _plain_text(body.text)
     if _looks_like_profile_done(body.text):
-        result = mark_profile_update_done(employee_email, evidence=body.text.strip())
+        result = mark_profile_done(employee_email, evidence=body.text.strip()).data
         return (f"Excelente, lo dejo registrado: **{result['title']}** quedó como done. "
                 "En unos días te escribiré para planificar un bench exitoso.")
     if _looks_like_named_task_done(body.text):
         try:
-            result = mark_task_done_by_title(employee_email, body.text.strip(), evidence=body.text.strip())
+            result = mark_named_task_done(employee_email, body.text.strip(),
+                                          evidence=body.text.strip()).data
             return (f"Excelente, lo dejo registrado: **{result['title']}** quedó como done. "
                     "Buen avance.")
         except KeyError:
@@ -341,9 +365,12 @@ def chat(body: ChatIn):
     using its tools (bound server-side to this employee). Deterministic fallback keeps
     the channel alive without AWS."""
     try:
+        _email_key(body.employee_email)
         from bench.agent_graph import run_chat  # needs langchain-aws + AWS creds
 
         return {"reply": run_chat(_email_key(body.employee_email), body.text, body.conversation_id)}
+    except DomainError as exc:
+        raise _domain_http_error(exc) from exc
     except (ImportError, SystemExit) as exc:
         # Agentic extras or AWS access not configured — expected in deterministic mode.
         print(f"[chat] agent unavailable ({exc}); serving deterministic reply")

@@ -20,7 +20,7 @@ from contextlib import asynccontextmanager
 
 try:
     from fastapi import FastAPI, Form, Request
-    from fastapi.responses import HTMLResponse, RedirectResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("The web UI needs FastAPI. Install with: uv sync --group ui") from exc
 
@@ -37,6 +37,11 @@ from bench.db import FOLLOW_UP_OPTIONS, TASK_CATEGORIES, TASK_STATUSES
 from bench.graph import build_graph
 from bench.seed import seed_if_empty
 from bench.tools import catalog
+from bench.tools.contracts import (DomainError, delete_catalog_task, delete_knowledge_item,
+                                    execute, generate_notifications, onboard_person,
+                                    require_email, run_checkin_cycle, save_person_report,
+                                    set_person_bench_start, update_catalog_task,
+                                    update_knowledge_item, update_person_task)
 from bench.tools.eod_report import build_eod_report, save_eod_report
 from bench.tools.generate_bench_plan import generate_bench_plan
 from bench.tools.state import (
@@ -56,7 +61,7 @@ def run_proactive_iteration() -> int:
     if not bench_enabled():
         return 0
     with actor_context():
-        return generate_due_notifications()
+        return generate_notifications().data
 
 
 async def _proactive_loop():
@@ -87,6 +92,20 @@ async def _lifespan(_app: "FastAPI"):
 
 app = FastAPI(title="Bench Assistant (dev UI)", lifespan=_lifespan)
 app.include_router(api_router)  # /api/v1 — consumed by the Teams bot (ADR 0004)
+
+
+@app.exception_handler(DomainError)
+async def _domain_error_handler(request: Request, exc: DomainError):
+    """Keep expected domain failures actionable at every HTTP boundary."""
+    status = {"validation": 400, "not_found": 404, "conflict": 409,
+              "protected": 409}.get(exc.code, 500)
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": exc.safe_message}, status_code=status)
+    response = _page("Request could not be completed",
+                     f"<div class='card'><p class='badge bad'>{esc(exc.safe_message)}</p>"
+                     "<p>Review the entered values and try again.</p></div>")
+    response.status_code = status
+    return response
 
 CATEGORY_LABELS = {
     "course": "Courses",
@@ -168,6 +187,16 @@ def _page(title: str, body: str) -> HTMLResponse:
 <nav><span class="actor-context">Operator: {esc(current_actor())}</span><a href="/">Dashboard</a><a href="/review">Review</a><a href="/onboard">Onboard to bench</a>
 <a href="/roles">Roles</a><a href="/knowledge">AI Knowledge</a></nav>
 <main><h1>{title}</h1>{body}</main></body></html>""")
+
+
+def _inline_domain_error(target_id: str, colspan: int, exc: DomainError) -> HTMLResponse:
+    status = {"validation": 400, "not_found": 404, "conflict": 409,
+              "protected": 409}.get(exc.code, 500)
+    return HTMLResponse(
+        f'<tr id="{esc(target_id)}"><td colspan="{colspan}">'
+        f'<span class="badge bad">{esc(exc.safe_message)}</span></td></tr>',
+        status_code=status,
+    )
 
 
 @app.middleware("http")
@@ -353,11 +382,9 @@ def review_by_employee(email: str = ""):
 @app.post("/person/{email}/date")
 def person_date(email: str, bench_start_date: str = Form("")):
     """Changing the date IS the trigger: history cleared, rules re-evaluated NOW."""
-    from bench.notify import generate_due_notifications
-    from bench.tools.state import set_bench_start_date
-
-    set_bench_start_date(email, bench_start_date or None)
-    generate_due_notifications()  # immediate — the bot delivers within its next poll (~20s)
+    set_person_bench_start(email, bench_start_date or None)
+    generate_notifications()
+    # immediate — the bot delivers within its next poll (~20s)
     return RedirectResponse("/", status_code=303)
 
 
@@ -387,7 +414,7 @@ heads-up; today/past = active, kickoff message)</label>
 async def onboard(request: Request):
     form = await request.form()
     profile_text, profile_filename = "", ""
-    email = str(form["email"]).strip()
+    email = require_email(str(form["email"]))
     upload = form.get("profile_pdf")
     if upload is not None and getattr(upload, "filename", ""):
         from bench.docstore import put_profile_pdf
@@ -397,14 +424,10 @@ async def onboard(request: Request):
         profile_text = extract_pdf_text(data)
         profile_filename = upload.filename
         put_profile_pdf(email, data, upload.filename)  # local disk or S3 per config
-    start_bench(str(form["employee"]).strip(), email, str(form["profile"]), str(form["track"]),
-                bench_start_date=str(form.get("bench_start_date") or "") or None,
-                profile_text=profile_text, profile_filename=profile_filename)
-    # Evaluate proactive rules now so the greeting/kickoff is queued immediately
-    # (otherwise it waits for the 60s scheduler — slow in a live demo).
-    from bench.notify import generate_due_notifications
-
-    generate_due_notifications()
+    onboard_person(str(form["employee"]).strip(), email, str(form["profile"]), str(form["track"]),
+                   bench_start_date=str(form.get("bench_start_date") or "") or None,
+                   profile_text=profile_text, profile_filename=profile_filename,
+                   starter=start_bench)
     return RedirectResponse(f"/person/{email}", status_code=303)
 
 
@@ -466,7 +489,7 @@ def person_view(email: str):
 @app.post("/person/{email}/task/{task_id}")
 def person_task_update(email: str, task_id: int,
                        status: str = Form(...), evidence: str = Form("")):
-    update_task_status(email, task_id, status, evidence=evidence)
+    update_person_task(email, task_id, status, evidence=evidence)
     return RedirectResponse(f"/person/{email}", status_code=303)
 
 
@@ -474,20 +497,15 @@ def person_task_update(email: str, task_id: int,
 async def person_checkin(email: str, request: Request):
     form = await request.form()
     planned = [p for p in [str(form.get("planned", "")).strip()] if p]
-    build_graph().invoke({
-        "employee_email": email, "period": str(form["period"]),
-        "task_updates": [], "planned": planned, "blockers": str(form.get("blockers", "")),
-    })
+    run_checkin_cycle(email, str(form["period"]), planned=planned,
+                      blockers=str(form.get("blockers", "")))
     return RedirectResponse(f"/person/{email}", status_code=303)
 
 
 @app.get("/person/{email}/report", response_class=HTMLResponse)
 def person_report(email: str):
-    state = load_bench_state(email)
-    track = catalog.load_track(state["track_id"])
-    verification = verify_progress(state, track)
-    report = build_eod_report(state, track, verification)
-    path = save_eod_report(report, email, verification["date"])
+    result = save_person_report(require_email(email)).data
+    report, path = result["report"], result["path"]
     return _page("EOD report", f'<div class="card">{_md(report, "report")}'
                                f'<p><i>Saved to {esc(path)} (simulated Teams delivery).</i></p></div>')
 
@@ -560,9 +578,10 @@ needs human approval. More content per role can be added later (skills matrix, s
 @app.post("/roles")
 def roles_create(profile_id: str = Form(...), name: str = Form(...), summary: str = Form(""),
                  permissions: str = Form(""), approvals: str = Form("")):
-    catalog.upsert_profile(profile_id.strip(), name.strip(), summary.strip(),
-                           _parse_permissions(permissions),
-                           [line.strip() for line in approvals.splitlines() if line.strip()])
+    execute("upsert_profile", catalog.upsert_profile,
+            profile_id.strip(), name.strip(), summary.strip(),
+            _parse_permissions(permissions),
+            [line.strip() for line in approvals.splitlines() if line.strip()])
     return RedirectResponse("/roles", status_code=303)
 
 
@@ -579,22 +598,26 @@ def role_edit(profile_id: str):
 @app.post("/roles/{profile_id}", response_class=HTMLResponse)
 def role_save(profile_id: str, name: str = Form(...), summary: str = Form(""),
               permissions: str = Form(""), approvals: str = Form("")):
-    catalog.upsert_profile(profile_id, name.strip(), summary.strip(),
-                           _parse_permissions(permissions),
-                           [line.strip() for line in approvals.splitlines() if line.strip()])
+    try:
+        execute("upsert_profile", catalog.upsert_profile,
+                profile_id, name.strip(), summary.strip(),
+                _parse_permissions(permissions),
+                [line.strip() for line in approvals.splitlines() if line.strip()])
+    except DomainError as exc:
+        return _inline_domain_error(f"role-{profile_id}", 5, exc)
     return HTMLResponse(_role_row(catalog.load_profile(profile_id)))
 
 
 @app.post("/roles/{profile_id}/delete", response_class=HTMLResponse)
 def role_delete(profile_id: str):
     try:
-        catalog.delete_profile(profile_id)
+        execute("delete_profile", catalog.delete_profile, profile_id)
         return HTMLResponse("")
-    except ValueError as exc:
+    except DomainError as exc:
         profile = catalog.load_profile(profile_id)
         row = _role_row(profile)
         return HTMLResponse(row.replace("</td></tr>",
-                                        f'<br><span class="badge bad">{esc(exc)}</span></td></tr>'))
+                                        f'<br><span class="badge bad">{esc(exc.safe_message)}</span></td></tr>'))
 
 
 # ---------- Tracks ABM ----------
@@ -630,17 +653,18 @@ def tracks_list():
 @app.post("/tracks")
 async def tracks_create(request: Request):
     form = await request.form()
-    catalog.create_track(str(form["track_id"]).strip(), str(form["name"]).strip(),
-                         int(str(form.get("duration_weeks", "4"))), form.getlist("profiles"))
+    execute("create_track", catalog.create_track,
+            str(form["track_id"]).strip(), str(form["name"]).strip(),
+            int(str(form.get("duration_weeks", "4"))), form.getlist("profiles"))
     return RedirectResponse(f"/tracks/{str(form['track_id']).strip()}", status_code=303)
 
 
 @app.post("/tracks/{track_id}/delete", response_class=HTMLResponse)
 def track_delete(track_id: str):
     try:
-        catalog.delete_track(track_id)
+        execute("delete_track", catalog.delete_track, track_id)
         return HTMLResponse("")
-    except ValueError as exc:
+    except DomainError as exc:
         return HTMLResponse(f'<tr id="track-{esc(track_id)}"><td colspan="5">'
                             f'<span class="badge bad">{esc(exc)}</span></td></tr>')
 
@@ -794,20 +818,27 @@ def task_edit(task_id: int):
 
 @app.post("/tasks/{task_id}", response_class=HTMLResponse)
 async def task_save(task_id: int, request: Request):
-    catalog.update_task(task_id, **(await _task_fields(request)))
+    try:
+        update_catalog_task(task_id, **(await _task_fields(request)))
+    except DomainError as exc:
+        return _inline_domain_error(f"task-{task_id}", 7, exc)
     return HTMLResponse(_task_row(catalog.load_task(task_id)))
 
 
 @app.post("/tasks/{task_id}/delete", response_class=HTMLResponse)
 def task_delete(task_id: int):
-    catalog.delete_task(task_id)
+    try:
+        delete_catalog_task(task_id)
+    except DomainError as exc:
+        return _inline_domain_error(f"task-{task_id}", 7, exc)
     return HTMLResponse("")
 
 
 @app.post("/tracks/{track_id}/responsibles")
 def track_add_responsible(track_id: str, name: str = Form(...), email: str = Form(...),
                           role: str = Form("people-lead")):
-    catalog.add_responsible(track_id, name.strip(), email.strip(), role)
+    execute("add_responsible", catalog.add_responsible,
+            track_id, name.strip(), email.strip(), role)
     return RedirectResponse(f"/tracks/{track_id}", status_code=303)
 
 
@@ -889,8 +920,8 @@ def knowledge_add(kind: str = Form(...), title: str = Form(...), provider: str =
                   notes: str = Form("")):
     from bench.tools.knowledge import add_knowledge
 
-    add_knowledge(kind, title.strip(), provider.strip(), url.strip(),
-                  register_url.strip(), tags.strip(), notes.strip())
+    execute("add_knowledge", add_knowledge, kind, title.strip(), provider.strip(), url.strip(),
+            register_url.strip(), tags.strip(), notes.strip())
     return RedirectResponse("/knowledge", status_code=303)
 
 
@@ -914,9 +945,12 @@ def knowledge_save(item_id: int, title: str = Form(...), provider: str = Form(""
                    tags: str = Form(""), notes: str = Form("")):
     from bench.tools.knowledge import get_knowledge, update_knowledge
 
-    update_knowledge(item_id, title=title.strip(), provider=provider.strip(),
-                     url=url.strip(), register_url=register_url.strip(),
-                     tags=tags.strip(), notes=notes.strip())
+    try:
+        update_knowledge_item(item_id, title=title.strip(), provider=provider.strip(),
+                              url=url.strip(), register_url=register_url.strip(),
+                              tags=tags.strip(), notes=notes.strip())
+    except DomainError as exc:
+        return _inline_domain_error(f"knowledge-{item_id}", 7, exc)
     return HTMLResponse(_knowledge_row(get_knowledge(item_id)))
 
 
@@ -924,7 +958,10 @@ def knowledge_save(item_id: int, title: str = Form(...), provider: str = Form(""
 def knowledge_delete(item_id: int):
     from bench.tools.knowledge import delete_knowledge
 
-    delete_knowledge(item_id)
+    try:
+        delete_knowledge_item(item_id)
+    except DomainError as exc:
+        return _inline_domain_error(f"knowledge-{item_id}", 7, exc)
     return HTMLResponse("")
 
 

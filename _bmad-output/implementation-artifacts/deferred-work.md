@@ -5,3 +5,8 @@
 ## Deferred from: code review second pass (2026-07-27)
 
 - DynamoDB date/notification atomicity remains deferred with full backend parity. In the current transitional mode, `set_bench_start_date()` updates SQLite person/audit state before clearing DynamoDB notifications. See `bench/tools/state.py`.
+
+## Deferred from: code review of 1-4-establish-channel-consistent-domain-tool-contracts (2026-07-29)
+
+- Preserve instantiated task history on catalog deletion. Current `delete_task()` removes `person_tasks` before deleting the catalog template; this pre-existing history-safety gap should be addressed by the dedicated task-history story.
+- Normalize responsible emails and enforce case-insensitive `(track_id, email)` uniqueness. Current schema/tooling permits duplicate responsible contacts on one track; address in the responsible-assignment/catalog-safety story.
